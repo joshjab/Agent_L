@@ -4,9 +4,11 @@
 
 ## Project Overview
 
-**Agent-L** is a high-performance, asynchronous Terminal User Interface (TUI) designed for interacting with local Large Language Models (LLMs) via [Ollama](https://ollama.com/).
+**Agent-L** is (currently) a high-performance, asynchronous Terminal User Interface (TUI) designed for interacting with local Large Language Models (LLMs) via [Ollama](https://ollama.com/).
 
-Built with Rust, it prioritizes low latency and resource efficiency. Unlike heavy web-based interfaces, this tool is designed for developers and systems engineers who want to interact with models directly from their terminal without sacrificing responsiveness or features.
+The goal is to enable small local models run on consumer GPUs to be able to perfom similar functionality to [OpenClaw](https://github.com/openclaw/openclaw). Which means building a framework that allows the "dumber models" to work in smaller chunks so it doesn't mess up.
+
+ Also built with Rust, because I wanted to learn Rust.
 
 ## Key Features
 
@@ -26,8 +28,8 @@ Built with Rust, it prioritizes low latency and resource efficiency. Unlike heav
 
 ```bash
 # Clone the repository
-git clone [https://github.com/yourusername/agent-l.git](https://github.com/yourusername/agent-l.git)
-cd agent-l
+git clone https://github.com/joshjab/agent_l.git
+cd agent_l
 
 # Build in release mode for best performance
 cargo build --release
