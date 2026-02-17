@@ -1,6 +1,6 @@
 use ratatui::{
     buffer::Buffer,
-    layout::{Constraint, Layout, Rect},
+    layout::{Constraint, Layout, Rect, Alignment},
     style::{Color, Modifier, Style, Stylize},
     text::{Line, Span, Text},
     widgets::{Block, BorderType, Paragraph, Widget, Wrap},
@@ -11,14 +11,20 @@ impl Widget for &App {
     fn render(self, area: Rect, buf: &mut Buffer) {
         let chunks = Layout::default()
             .constraints([
-                Constraint::Min(0),    // Chat History
-                Constraint::Length(3), // Input Box
+                Constraint::Min(0),
+                Constraint::Length(3),
+                Constraint::Length(1), 
             ])
             .split(area);
-
+        
         let mut list_items = Vec::new();
+        let chat_width = chunks[0].width.saturating_sub(4); // Inner width for the separator
 
         for msg in &self.history {
+            // Horizontal separator line before each new message
+            let separator = "─".repeat(chat_width as usize);
+            list_items.push(Line::from(separator.dark_gray()));
+
             match msg.role {
                 Role::User => {
                     list_items.push(Line::from(vec![
@@ -31,53 +37,42 @@ impl Widget for &App {
                     list_items.extend(parse_simple_markdown(&msg.content));
                 }
             }
-            list_items.push(Line::from("")); // Spacer line
+            // Add a small gap after the message
+            list_items.push(Line::from("")); 
         }
 
+        //Main Block
         Paragraph::new(Text::from(list_items))
-            .block(Block::bordered().title(" Chat History ").border_type(BorderType::Rounded))
+            .block(
+                Block::bordered()
+                    .title(
+                        Line::from(" 🦙 Agent L ")
+                            .style(Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD))
+                    )
+                    .title_alignment(Alignment::Center)
+                    .border_type(BorderType::Rounded)
+            )
             .wrap(Wrap { trim: true })
             .scroll((self.scroll_offset, 0))
             .render(chunks[0], buf);
 
+        //Prompt Block
         Paragraph::new(format!("> {}", self.input))
             .block(Block::bordered().title(" Prompt ").border_style(Style::default().fg(Color::Cyan)))
             .render(chunks[1], buf);
 
-            let chunks = Layout::default()
-            .constraints([Constraint::Min(0), Constraint::Length(3)])
-            .split(area);
-        
-                    // --- 1. PREPARE THE DATA ---
-            let mut list_items = Vec::new();
-
-            for msg in &self.history {
-                // ... your role-based logic to push Spans/Lines into list_items ...
-            }
-
-            // --- 2. CAPTURE MEASUREMENTS FIRST (The "Systems Engineer" way) ---
-            // We get our numbers while we still own the list_items Vec
-            let total_lines = list_items.len();
-            let viewport_height = chunks[0].height.saturating_sub(2); // Subtract borders
-
-            // --- 3. SYNC WITH APP STATE ---
-            // We use a small hack to update the App's knowledge of the UI
-            // Since we are in a read-only render(&self), we need to update these
-            // via the main loop or use interior mutability, but for now, 
-            // let's just make sure we don't break ownership.
-            let _ = total_lines; // Silences the unused warning
-
-            // --- 4. CONSUME THE DATA ---
-            // Now we move the data into the widget. It's gone after this line.
-            Paragraph::new(Text::from(list_items))
-                .block(Block::bordered().title(" Chat History "))
-                .wrap(Wrap { trim: true })
-                .scroll((self.scroll_offset, 0))
-                .render(chunks[0], buf);
+        // Model and Token Count
+        let status_info = Line::from(vec![
+                " MODEL: ".into(),
+                self.model_name.clone().yellow().bold(),
+                " | TOKENS: ".into(),
+                self.token_count.to_string().green().bold(),
+                " | [Ctrl+Q] Quit ".into(),
+            ]);
+        Paragraph::new(status_info).render(chunks[2], buf);
     }
 }
 
-// Added the <'_> to fix the lifetime warning
 fn parse_simple_markdown(text: &str) -> Vec<Line<'_>> {
     let mut lines = Vec::new();
     for raw_line in text.lines() {

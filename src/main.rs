@@ -1,6 +1,7 @@
 mod app;
 mod ollama;
 mod ui;
+mod config;
 
 use std::io;
 use crossterm::event::{self, Event, KeyCode};
@@ -12,13 +13,16 @@ async fn main() -> io::Result<()> {
     let mut app = App::new();
 
     while !app.exit {
-        // 1. Draw
+        let total_lines = app.history.iter().fold(0, |acc, m| acc + m.content.lines().count() + 2); 
+
+        app.enforce_auto_scroll(total_lines, app.terminal_height);
+
         terminal.draw(|f| f.render_widget(&app, f.area()))?;
 
-        // 2. Update state from background tasks
+        // Update state from background tasks
         app.update();
 
-        // 3. Handle Input (with a small timeout so the loop keeps spinning)
+        // Handle Input (with a small timeout so the loop keeps spinning)
         if event::poll(std::time::Duration::from_millis(16))? {
             if let Event::Key(key) = event::read()? {
                 match key.code {
@@ -26,12 +30,13 @@ async fn main() -> io::Result<()> {
                     app.exit = true;
                 }
                 KeyCode::Char(c) => {
-                    app.input.push(c); // Add typed char to our buffer
+                    app.input.push(c); 
                 }
                 KeyCode::Backspace => {
-                    app.input.pop(); // Remove last char
+                    app.input.pop(); 
                 }
                 KeyCode::Up => {
+                    app.auto_scroll = false;
                     app.scroll_offset = app.scroll_offset.saturating_sub(1);
                 }
                 KeyCode::Down => {

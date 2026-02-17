@@ -1,15 +1,17 @@
 use futures_util::StreamExt;
+use crate::config::Config;
 
 pub async fn fetch_ollama_stream(
     prompt: &str, 
     tx: tokio::sync::mpsc::UnboundedSender<String>
 ) -> Result<(), Box<dyn std::error::Error>> {
     let client = reqwest::Client::new();
+    let config = Config::from_env();
     
     let res = client
-        .post("http://192.168.86.11:7869/api/generate")
+        .post(&config.ollama_url) // Dynamic URL
         .json(&serde_json::json!({
-            "model": "gemma3:12b",
+            "model": config.model_name, // Dynamic Model
             "prompt": prompt,
             "stream": true
         }))
@@ -50,3 +52,4 @@ pub async fn fetch_ollama_stream(
     
     Ok(())
 }
+
