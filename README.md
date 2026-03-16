@@ -4,57 +4,88 @@
 
 ## Project Overview
 
-**Agent-L** is (currently) a high-performance, asynchronous Terminal User Interface (TUI) designed for interacting with local Large Language Models (LLMs) via [Ollama](https://ollama.com/).
+**Agent-L** is a high-performance, asynchronous Terminal User Interface (TUI) for interacting with local Large Language Models via [Ollama](https://ollama.com/).
 
-The goal is to enable small local models run on consumer GPUs to be able to perfom similar functionality to [OpenClaw](https://github.com/openclaw/openclaw). Which means building a framework that allows the "dumber models" to work in smaller chunks so it doesn't mess up.
-
- Also built with Rust, because I wanted to learn Rust.
+The long-term goal is to enable small local models running on consumer GPUs to perform agentic tasks — building a "Frontend, Intent, and Specialist" agent framework that breaks work into smaller chunks so lighter models can stay on track. Think of it as a local alternative to tools like [OpenClaw](https://github.com/openclaw/openclaw), built in Rust.
 
 ## Key Features
 
-* **Real-Time Streaming:** Experience instant gratification with token-by-token response streaming. The UI updates immediately as Ollama generates text.
-* **Asynchronous Architecture:** Powered by the `tokio` runtime, network I/O is handled in background threads. This ensures the TUI remains buttery smooth at 60 FPS.
-* **Robust TUI Experience:** Built using the `ratatui` library, featuring:
-    * **Smart Auto-Scrolling:** The view "sticks" to the bottom while the AI is typing but intelligently pauses if you manually scroll up to review history.
-    * **Visual Clarity:** Clear visual separators and color-coding distinguish between User prompts and Assistant responses.
-    * **Basic Markdown:** Highlights bold text and code snippets for better readability.
+* **Real-Time Streaming:** Token-by-token response streaming with immediate UI updates as Ollama generates text.
+* **Asynchronous Architecture:** Powered by the `tokio` runtime — network I/O runs in background tasks so the TUI stays responsive.
+* **Startup Health Checks:** On launch, Agent-L connects to Ollama, verifies the configured model is pulled, and polls until it's loaded into memory before allowing input.
+* **Robust TUI:** Built with `ratatui`, featuring:
+  * **Smart Auto-Scrolling:** Sticks to the bottom while the AI is typing; pauses if you scroll up to review history.
+  * **Visual Clarity:** Color-coded separators distinguish User and Assistant messages.
+  * **Basic Markdown:** Bold (`**text**`) is highlighted for readability.
 
-## Prerequisites & Installation
+## Prerequisites
 
-1.  **Rust Toolchain:** Version 1.75+ is recommended.
-2.  **Ollama:** Ensure the Ollama server is running and you have pulled your desired model (e.g., `ollama pull gemma3:12b`).
+1. **Rust Toolchain:** Edition 2024 (Rust 1.85+).
+2. **Ollama:** Running locally with your desired model pulled — e.g., `ollama pull gemma3`.
 
-### Building from Source
+## Building & Running
 
 ```bash
-# Clone the repository
 git clone https://github.com/joshjab/agent_l.git
 cd agent_l
 
-# Build in release mode for best performance
 cargo build --release
-
-# Run the binary
 ./target/release/agent_l
 ```
 
 ## Configuration
 
-Configuration is currently managed in the source:
-* **Model Selection:** Update the model string in `src/ollama.rs`.
-* **Host Address:** If running Ollama on a remote local IP (e.g., `192.168.86.11`), update the endpoint in `src/ollama.rs`.
+Create a `.env` file in the project root (it is `.gitignore`d). All three variables are optional and fall back to the defaults shown:
 
-## Controls & Usage
+```env
+OLLAMA_HOST=127.0.0.1   # default
+OLLAMA_PORT=11434        # default
+OLLAMA_MODEL=llama3      # default
+```
 
-| Key / Action | Description |
+Example — using a non-standard port with a specific model:
+
+```env
+OLLAMA_PORT=7869
+OLLAMA_MODEL=gemma3
+```
+
+## Controls
+
+| Key | Action |
 | :--- | :--- |
-| **Enter** | Send your current prompt to Ollama. |
-| **Up / Down Arrow** | Manually scroll through the chat history. |
-| **Backspace** | Edit your current prompt. |
-| **Ctrl + Q** | Safely exit the application. |
+| **Enter** | Send prompt to Ollama |
+| **Up / Down Arrow** | Scroll through chat history |
+| **Backspace** | Edit current prompt |
+| **Ctrl + Q** | Exit |
+
+## Testing
+
+The test suite covers all modules with inline unit tests and wiremock-based integration tests. No running Ollama instance is required.
+
+```bash
+cargo test
+```
+
+## Project Structure
+
+```
+src/
+  main.rs       — event loop, input handling
+  app.rs        — application state and update logic
+  config.rs     — configuration (env vars / .env file)
+  ollama.rs     — streaming HTTP client for /api/chat
+  startup.rs    — startup health checks (/api/tags, /api/ps)
+  ui.rs         — ratatui rendering and markdown parsing
+tests/
+  ollama_integration.rs   — wiremock tests for the Ollama HTTP client
+  startup_integration.rs  — wiremock tests for startup check sequences
+```
 
 ## Roadmap
 
-Future developments include local config file support, multi-model selection menus, and scrollback buffering.
+See [ROADMAP.md](doc/ROADMAP.md) for the full backlog. Upcoming work includes:
 
-Please see [ROADMAP.md](doc/ROADMAP.md) for the full feature backlog.
+- Agent system prompts (Frontend / Intent / Specialist roles)
+- Agent and sub-agent orchestration framework
+- Tool call support
