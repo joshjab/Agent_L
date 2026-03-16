@@ -1,18 +1,18 @@
 use futures_util::StreamExt;
-use crate::config::Config;
 use crate::app::AppEvent;
 
 pub async fn fetch_ollama_stream(
+    url: &str,
+    model: &str,
     messages: Vec<serde_json::Value>,
-    tx: tokio::sync::mpsc::UnboundedSender<AppEvent>
+    tx: tokio::sync::mpsc::UnboundedSender<AppEvent>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let client = reqwest::Client::new();
-    let config = Config::from_env();
 
     let res = client
-        .post(&config.ollama_url)
+        .post(url)
         .json(&serde_json::json!({
-            "model": config.model_name,
+            "model": model,
             "messages": messages,
             "stream": true
         }))

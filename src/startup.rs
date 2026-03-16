@@ -5,16 +5,33 @@ use tokio::time::Instant;
 use crate::app::{AppEvent, StartupState};
 use crate::config::Config;
 
-const MAX_CONNECT_RETRIES: u32 = 10;
-const CONNECT_RETRY_DELAY: Duration = Duration::from_secs(3);
-const LOAD_POLL_INTERVAL: Duration = Duration::from_secs(1);
-const LOAD_TIMEOUT: Duration = Duration::from_secs(60);
+pub struct StartupTimings {
+    pub max_connect_retries: u32,
+    pub connect_retry_delay: Duration,
+    pub load_poll_interval: Duration,
+    pub load_timeout: Duration,
+}
+
+impl Default for StartupTimings {
+    fn default() -> Self {
+        Self {
+            max_connect_retries: 10,
+            connect_retry_delay: Duration::from_secs(3),
+            load_poll_interval: Duration::from_secs(1),
+            load_timeout: Duration::from_secs(60),
+        }
+    }
+}
 
 fn model_matches(entry_name: &str, configured: &str) -> bool {
     entry_name == configured || entry_name.starts_with(&format!("{}:", configured))
 }
 
-pub async fn run_startup_checks(config: Config, tx: UnboundedSender<AppEvent>) {
+pub async fn run_startup_checks(
+    config: Config,
+    tx: UnboundedSender<AppEvent>,
+    timings: StartupTimings,
+) {
     // Step 1: Connectivity — GET /api/tags with retry
     let tags_url = format!("{}/api/tags", config.base_url);
     let ps_url = format!("{}/api/ps", config.base_url);
@@ -25,7 +42,7 @@ pub async fn run_startup_checks(config: Config, tx: UnboundedSender<AppEvent>) {
 
     let mut response_body: Option<serde_json::Value> = None;
 
-    for attempt in 0..MAX_CONNECT_RETRIES {
+    for attempt in 0..timings.max_connect_retries {
         let _ = tx.send(AppEvent::StartupUpdate(StartupState::Connecting));
 
         match client.get(&tags_url).send().await {
@@ -41,8 +58,8 @@ pub async fn run_startup_checks(config: Config, tx: UnboundedSender<AppEvent>) {
             _ => {}
         }
 
-        if attempt + 1 < MAX_CONNECT_RETRIES {
-            tokio::time::sleep(CONNECT_RETRY_DELAY).await;
+        if attempt + 1 < timings.max_connect_retries {
+            tokio::time::sleep(timings.connect_retry_delay).await;
         }
     }
 
@@ -99,12 +116,57 @@ pub async fn run_startup_checks(config: Config, tx: UnboundedSender<AppEvent>) {
             _ => {}
         }
 
-        if start.elapsed() >= LOAD_TIMEOUT {
+        if start.elapsed() >= timings.load_timeout {
             // Timeout — let the user try anyway
             let _ = tx.send(AppEvent::StartupUpdate(StartupState::Ready));
             return;
         }
 
-        tokio::time::sleep(LOAD_POLL_INTERVAL).await;
+        tokio::time::sleep(timings.load_poll_interval).await;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_exact_match() {
+        assert!(model_matches("llama3", "llama3"));
+    }
+
+    #[test]
+    fn test_tag_suffix_match() {
+        assert!(model_matches("llama3:latest", "llama3"));
+    }
+
+    #[test]
+    fn test_multiple_tag_variants() {
+        assert!(model_matches("llama3:7b-instruct", "llama3"));
+    }
+
+    #[test]
+    fn test_no_match_different_name() {
+        assert!(!model_matches("codellama", "llama3"));
+    }
+
+    #[test]
+    fn test_no_match_prefix_without_colon() {
+        assert!(!model_matches("llama3extra", "llama3"));
+    }
+
+    #[test]
+    fn test_both_empty() {
+        assert!(model_matches("", ""));
+    }
+
+    #[test]
+    fn test_nonempty_vs_empty() {
+        assert!(!model_matches("llama3", ""));
+    }
+
+    #[test]
+    fn test_exact_with_colon() {
+        assert!(model_matches("llama3:latest", "llama3:latest"));
     }
 }

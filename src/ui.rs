@@ -181,3 +181,86 @@ fn parse_simple_markdown(text: &str) -> Vec<Line<'_>> {
     }
     lines
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_plain_text() {
+        let lines = parse_simple_markdown("hello world");
+        assert_eq!(lines.len(), 1);
+        assert_eq!(lines[0].spans.len(), 1);
+        assert_eq!(lines[0].spans[0].content, "hello world");
+    }
+
+    #[test]
+    fn test_bold_single_pair() {
+        let lines = parse_simple_markdown("this is **bold** text");
+        assert_eq!(lines.len(), 1);
+        assert_eq!(lines[0].spans.len(), 3);
+        assert_eq!(lines[0].spans[0].content, "this is ");
+        assert_eq!(lines[0].spans[1].content, "bold");
+        assert_eq!(lines[0].spans[2].content, " text");
+    }
+
+    #[test]
+    fn test_bold_multiple_pairs() {
+        let lines = parse_simple_markdown("**A** and **B**");
+        assert_eq!(lines.len(), 1);
+        assert_eq!(lines[0].spans.len(), 5);
+    }
+
+    #[test]
+    fn test_multiline() {
+        let lines = parse_simple_markdown("line one\n**line two**\nline three");
+        assert_eq!(lines.len(), 3);
+        // line 0: plain
+        assert_eq!(lines[0].spans.len(), 1);
+        assert_eq!(lines[0].spans[0].content, "line one");
+        // line 1: bold
+        assert_eq!(lines[1].spans.len(), 3);
+        assert_eq!(lines[1].spans[1].content, "line two");
+        // line 2: plain
+        assert_eq!(lines[2].spans.len(), 1);
+        assert_eq!(lines[2].spans[0].content, "line three");
+    }
+
+    #[test]
+    fn test_empty_string() {
+        let lines = parse_simple_markdown("");
+        assert_eq!(lines.len(), 0);
+    }
+
+    #[test]
+    fn test_only_bold() {
+        // "**only bold**" splits to ["", "only bold", ""] → 3 spans
+        let lines = parse_simple_markdown("**only bold**");
+        assert_eq!(lines.len(), 1);
+        assert_eq!(lines[0].spans.len(), 3);
+        assert_eq!(lines[0].spans[1].content, "only bold");
+    }
+
+    #[test]
+    fn test_adjacent_markers() {
+        // "****" splits to ["", "", ""] → 3 spans, no panic
+        let lines = parse_simple_markdown("****");
+        assert_eq!(lines.len(), 1);
+        assert_eq!(lines[0].spans.len(), 3);
+    }
+
+    #[test]
+    fn test_unclosed_bold() {
+        // "a **b" splits to ["a ", "b"] → raw, bold — documents known behavior
+        let lines = parse_simple_markdown("a **b");
+        assert_eq!(lines.len(), 1);
+        assert_eq!(lines[0].spans.len(), 2);
+        assert_eq!(lines[0].spans[0].content, "a ");
+        assert_eq!(lines[0].spans[1].content, "b");
+    }
+
+    #[test]
+    fn test_spinner_has_10_frames() {
+        assert_eq!(SPINNER.len(), 10);
+    }
+}
