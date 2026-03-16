@@ -47,17 +47,26 @@ impl App {
         if self.input.is_empty() || self.is_loading { return; }
 
         let user_text = self.input.clone();
-        // User message to history immediately
-        self.history.push(ChatMessage { role: Role::User, content: user_text.clone() });
-        // Empty Assistant entry that we will stream into
+        // 1. Push user message
+        self.history.push(ChatMessage { role: Role::User, content: user_text });
+
+        // 2. Serialize NOW — placeholder not yet added
+        let messages: Vec<serde_json::Value> = self.history.iter().map(|m| {
+            serde_json::json!({
+                "role": match m.role { Role::User => "user", Role::Assistant => "assistant" },
+                "content": m.content
+            })
+        }).collect();
+
+        // 3. Push empty assistant placeholder for streaming tokens to fill
         self.history.push(ChatMessage { role: Role::Assistant, content: String::new() });
-        
+
         self.input.clear();
         self.is_loading = true;
         let tx = self.tx.clone();
 
         tokio::spawn(async move {
-            let _ = crate::ollama::fetch_ollama_stream(&user_text, tx).await;
+            let _ = crate::ollama::fetch_ollama_stream(messages, tx).await;
         });
     }
     

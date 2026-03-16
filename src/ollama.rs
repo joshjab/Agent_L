@@ -2,17 +2,17 @@ use futures_util::StreamExt;
 use crate::config::Config;
 
 pub async fn fetch_ollama_stream(
-    prompt: &str, 
+    messages: Vec<serde_json::Value>,
     tx: tokio::sync::mpsc::UnboundedSender<String>
 ) -> Result<(), Box<dyn std::error::Error>> {
     let client = reqwest::Client::new();
     let config = Config::from_env();
-    
+
     let res = client
-        .post(&config.ollama_url) // Dynamic URL
+        .post(&config.ollama_url)
         .json(&serde_json::json!({
-            "model": config.model_name, // Dynamic Model
-            "prompt": prompt,
+            "model": config.model_name,
+            "messages": messages,
             "stream": true
         }))
         .send()
@@ -32,7 +32,7 @@ pub async fn fetch_ollama_stream(
                 // Try to parse. If it fails, report the raw string for debugging.
                 match serde_json::from_slice::<serde_json::Value>(&bytes) {
                     Ok(body) => {
-                        if let Some(token) = body["response"].as_str() {
+                        if let Some(token) = body["message"]["content"].as_str() {
                             let _ = tx.send(token.to_string());
                         }
                     },

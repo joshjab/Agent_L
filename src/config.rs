@@ -16,7 +16,7 @@ impl Config {
         let model = env::var("OLLAMA_MODEL").unwrap_or_else(|_| "llama3".to_string());
 
         Self {
-            ollama_url: format!("http://{}:{}/api/generate", host, port),
+            ollama_url: format!("http://{}:{}/api/chat", host, port),
             model_name: model,
         }
     }
