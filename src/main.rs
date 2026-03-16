@@ -2,6 +2,7 @@ mod app;
 mod ollama;
 mod ui;
 mod config;
+mod startup;
 
 use std::io;
 use crossterm::event::{self, Event, KeyCode};
