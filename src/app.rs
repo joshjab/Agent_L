@@ -1,5 +1,6 @@
 use tokio::sync::mpsc;
 
+use crate::agents::orchestrator::TaskPlan;
 use crate::startup::StartupTimings;
 
 pub enum Role { User, Assistant }
@@ -22,6 +23,8 @@ pub enum AppEvent {
     Token(String),
     StreamDone,
     StartupUpdate(StartupState),
+    /// Agent L has decided how to route the user's message.
+    RouteDecision(TaskPlan),
 }
 
 pub struct App {
@@ -38,6 +41,9 @@ pub struct App {
     pub exit: bool,
     pub startup_state: StartupState,
     pub tick: usize,
+    /// The most recent routing decision made by Agent L. `None` until the
+    /// first message is processed.
+    pub route_decision: Option<TaskPlan>,
 
     // Channel for the background worker to talk to the UI
     tx: mpsc::UnboundedSender<AppEvent>,
@@ -69,6 +75,7 @@ impl App {
             auto_scroll: true,
             startup_state: StartupState::Connecting,
             tick: 0,
+            route_decision: None,
             tx,
             rx,
         }
@@ -92,6 +99,7 @@ impl App {
             model_name: config.model_name,
             base_url: config.base_url,
             token_count: 0,
+            route_decision: None,
             tx,
             rx,
         }
@@ -111,7 +119,8 @@ impl App {
         // 1. Push user message
         self.history.push(ChatMessage { role: Role::User, content: user_text });
 
-        // 2. Serialize NOW — placeholder not yet added
+        // 2. Serialize NOW — placeholder not yet added.
+        //    This slice is also the context Agent L receives for classification.
         let messages: Vec<serde_json::Value> = self.history.iter().map(|m| {
             serde_json::json!({
                 "role": match m.role { Role::User => "user", Role::Assistant => "assistant" },
@@ -129,6 +138,25 @@ impl App {
         let model = self.model_name.clone();
 
         tokio::spawn(async move {
+            // Step A: run Agent L to classify intent and emit a RouteDecision.
+            let agent = crate::agents::orchestrator::OrchestratorAgent::new(&model);
+            let agent_url = chat_url.clone();
+            let context = messages.clone();
+            if let Ok(plan) = crate::agents::call_with_retry(
+                &agent,
+                &context,
+                |req| {
+                    let url = agent_url.clone();
+                    async move { crate::ollama::post_json(&url, req).await }
+                },
+                3,
+            )
+            .await
+            {
+                let _ = tx.send(AppEvent::RouteDecision(plan));
+            }
+
+            // Step B: stream the actual chat response.
             let _ = crate::ollama::fetch_ollama_stream(&chat_url, &model, messages, tx).await;
         });
     }
@@ -145,6 +173,7 @@ impl App {
                 }
                 AppEvent::StreamDone => { self.is_loading = false; }
                 AppEvent::StartupUpdate(state) => { self.startup_state = state; }
+                AppEvent::RouteDecision(plan) => { self.route_decision = Some(plan); }
             }
         }
 
@@ -390,5 +419,49 @@ mod tests {
         app.terminal_height = 20;
         app.scroll_to_bottom();
         assert_eq!(app.scroll_offset, 0);
+    }
+
+    // --- RouteDecision ---
+
+    fn chat_plan() -> TaskPlan {
+        use crate::agents::orchestrator::{AgentKind, IntentType, PlanStep};
+        TaskPlan {
+            intent_type: IntentType::Conversational,
+            steps: vec![PlanStep { agent: AgentKind::Chat, task: "reply".into(), depends_on: None }],
+        }
+    }
+
+    #[tokio::test]
+    async fn route_decision_starts_as_none() {
+        let app = App::new_for_test();
+        assert!(app.route_decision.is_none());
+    }
+
+    #[tokio::test]
+    async fn route_decision_event_stores_plan() {
+        let mut app = App::new_for_test();
+        let plan = chat_plan();
+        app.sender_for_test().send(AppEvent::RouteDecision(plan.clone())).unwrap();
+        app.update();
+        assert_eq!(app.route_decision.as_ref().unwrap(), &plan);
+    }
+
+    #[tokio::test]
+    async fn route_decision_event_replaces_previous_plan() {
+        use crate::agents::orchestrator::{AgentKind, IntentType, PlanStep};
+        let mut app = App::new_for_test();
+        let tx = app.sender_for_test();
+
+        tx.send(AppEvent::RouteDecision(chat_plan())).unwrap();
+        app.update();
+
+        let search_plan = TaskPlan {
+            intent_type: IntentType::Factual,
+            steps: vec![PlanStep { agent: AgentKind::Search, task: "look it up".into(), depends_on: None }],
+        };
+        tx.send(AppEvent::RouteDecision(search_plan.clone())).unwrap();
+        app.update();
+
+        assert_eq!(app.route_decision.as_ref().unwrap(), &search_plan);
     }
 }

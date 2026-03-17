@@ -60,6 +60,22 @@ ratatui terminal.draw()
 - **`config.rs`** — reads `OLLAMA_HOST`, `OLLAMA_PORT`, `OLLAMA_MODEL` env vars (`.env` loaded via `dotenvy`, suppressed in tests with `#[cfg(not(test))]`). `Config::new(host, port, model)` is the direct constructor used by integration tests.
 - **`ui.rs`** — `ratatui` rendering. Shows startup splash screen until `StartupState::Ready`, then the chat view. `parse_simple_markdown()` handles `**bold**` highlighting.
 
+### Roadmap tracking
+
+After completing any work tied to `doc/ROADMAP.md`:
+- Check off each finished task with `[x]`
+- Mark the milestone's `### Verification` section with ✅ and note the actual results (test counts, observed behavior)
+
+Do this immediately after the work is done, not at the end of a session.
+
+### Testing rules
+
+For every function you write, always add at minimum:
+- one **happy-path** unit test (valid input, expected output)
+- one **sad-path** unit test (invalid/edge-case input, expected error or fallback)
+
+Place unit tests in a `#[cfg(test)] mod tests { ... }` block at the bottom of the same file. Integration tests go in `tests/`.
+
 ### Testing approach
 
 No running Ollama required. HTTP tests use `wiremock` (a real local HTTP server), not trait mocks. Wiremock uses **FIFO** matching — the first-registered mock has highest priority; `up_to_n_times(n)` exhausts a mock so later requests fall through to subsequent registrations.

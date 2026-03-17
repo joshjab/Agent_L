@@ -5,6 +5,7 @@ use ratatui::{
     text::{Line, Span, Text},
     widgets::{Block, BorderType, Paragraph, Widget, Wrap},
 };
+use crate::agents::orchestrator::{AgentKind, IntentType, TaskPlan};
 use crate::app::{App, Role, StartupState};
 
 const SPINNER: &[&str] = &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
@@ -36,15 +37,22 @@ impl Widget for &App {
                 .render(chunks[1], buf);
         }
 
-        // Model and Token Count
-        let status_info = Line::from(vec![
+        // Status line: model, tokens, optional routing decision
+        let mut status_spans: Vec<Span> = vec![
             " MODEL: ".into(),
-            self.model_name.clone().yellow().bold(),
+            Span::styled(self.model_name.clone(), Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
             " | TOKENS: ".into(),
-            self.token_count.to_string().green().bold(),
-            " | [Ctrl+Q] Quit ".into(),
-        ]);
-        Paragraph::new(status_info).render(chunks[2], buf);
+            Span::styled(self.token_count.to_string(), Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)),
+        ];
+        if let Some(plan) = &self.route_decision {
+            status_spans.push(" | ".into());
+            status_spans.push(Span::styled(
+                format_route_decision(plan),
+                Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
+            ));
+        }
+        status_spans.push(" | [Ctrl+Q] Quit ".into());
+        Paragraph::new(Line::from(status_spans)).render(chunks[2], buf);
     }
 }
 
@@ -161,6 +169,45 @@ fn render_chat(app: &App, area: Rect, buf: &mut Buffer) {
         .render(area, buf);
 }
 
+/// Format a `TaskPlan` into a compact status-line string.
+///
+/// Examples:
+/// - Conversational → `"Agent L → Chat"`
+/// - Factual        → `"Agent L → Search (Factual)"`
+/// - Creative       → `"Agent L → Chat (Creative)"`
+/// - Task (multi)   → `"Agent L → Shell + Code"`
+pub fn format_route_decision(plan: &TaskPlan) -> String {
+    let mut seen = std::collections::HashSet::new();
+    let agents: Vec<&str> = plan
+        .steps
+        .iter()
+        .filter_map(|s| {
+            let label = agent_kind_label(&s.agent);
+            if seen.insert(label) { Some(label) } else { None }
+        })
+        .collect();
+
+    let agents_str = agents.join(" + ");
+
+    match plan.intent_type {
+        IntentType::Factual  => format!("Agent L \u{2192} {agents_str} (Factual)"),
+        IntentType::Creative => format!("Agent L \u{2192} {agents_str} (Creative)"),
+        _                    => format!("Agent L \u{2192} {agents_str}"),
+    }
+}
+
+fn agent_kind_label(kind: &AgentKind) -> &'static str {
+    match kind {
+        AgentKind::Chat     => "Chat",
+        AgentKind::Code     => "Code",
+        AgentKind::Search   => "Search",
+        AgentKind::Shell    => "Shell",
+        AgentKind::Calendar => "Calendar",
+        AgentKind::Memory   => "Memory",
+        AgentKind::Unknown  => "Unknown",
+    }
+}
+
 fn parse_simple_markdown(text: &str) -> Vec<Line<'_>> {
     let mut lines = Vec::new();
     for raw_line in text.lines() {
@@ -185,6 +232,54 @@ fn parse_simple_markdown(text: &str) -> Vec<Line<'_>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::agents::orchestrator::{AgentKind, IntentType, PlanStep, TaskPlan};
+
+    fn plan(intent: IntentType, agents: &[AgentKind]) -> TaskPlan {
+        TaskPlan {
+            intent_type: intent,
+            steps: agents
+                .iter()
+                .map(|a| PlanStep { agent: a.clone(), task: "x".into(), depends_on: None })
+                .collect(),
+        }
+    }
+
+    #[test]
+    fn route_conversational_shows_no_intent_suffix() {
+        let s = format_route_decision(&plan(IntentType::Conversational, &[AgentKind::Chat]));
+        assert_eq!(s, "Agent L → Chat");
+    }
+
+    #[test]
+    fn route_factual_shows_factual_suffix() {
+        let s = format_route_decision(&plan(IntentType::Factual, &[AgentKind::Search]));
+        assert_eq!(s, "Agent L → Search (Factual)");
+    }
+
+    #[test]
+    fn route_creative_shows_creative_suffix() {
+        let s = format_route_decision(&plan(IntentType::Creative, &[AgentKind::Chat]));
+        assert_eq!(s, "Agent L → Chat (Creative)");
+    }
+
+    #[test]
+    fn route_task_multi_step_joins_with_plus() {
+        let s = format_route_decision(&plan(IntentType::Task, &[AgentKind::Shell, AgentKind::Code]));
+        assert_eq!(s, "Agent L → Shell + Code");
+    }
+
+    #[test]
+    fn route_deduplicates_repeated_agents() {
+        // Two steps with the same agent should appear only once
+        let s = format_route_decision(&plan(IntentType::Task, &[AgentKind::Chat, AgentKind::Chat]));
+        assert_eq!(s, "Agent L → Chat");
+    }
+
+    #[test]
+    fn route_preserves_agent_order() {
+        let s = format_route_decision(&plan(IntentType::Task, &[AgentKind::Search, AgentKind::Shell, AgentKind::Code]));
+        assert_eq!(s, "Agent L → Search + Shell + Code");
+    }
 
     #[test]
     fn test_plain_text() {

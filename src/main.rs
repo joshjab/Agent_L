@@ -1,8 +1,9 @@
+mod agents;
 mod app;
-mod ollama;
-mod ui;
 mod config;
+mod ollama;
 mod startup;
+mod ui;
 
 use std::io;
 use crossterm::event::{self, Event, KeyCode};
