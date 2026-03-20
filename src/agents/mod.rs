@@ -1,5 +1,8 @@
+pub mod compression;
 pub mod orchestrator;
+pub mod persona;
 pub mod schema;
+pub mod specialists;
 
 use schema::ParseError;
 use serde_json::Value;

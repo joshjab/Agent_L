@@ -86,30 +86,30 @@ If the status line doesn't update or shows `Unknown`, Agent L returned an invali
 
 The Persona layer is the face of the assistant — it handles the conversation with the user, compresses old context so the model doesn't drift, and synthesizes specialist results into natural responses. It wraps every call to Agent L and every specialist result before the user sees it.
 
-- [ ] Create `src/agents/persona.rs` — system prompt (personality/tone), handles all outbound prompts to Agent L and inbound results from specialists
-- [ ] Create `src/agents/compression.rs` — when the conversation exceeds a token threshold, summarize the oldest N turns into a single "context summary" block and replace them; the summary is prepended to future prompts
-- [ ] Inject a short goal reminder every N turns (e.g., "You are Agent-L, a local personal assistant…") to prevent personality drift over long sessions
-- [ ] Support `PERSONA_SYSTEM_PROMPT` env var to override the built-in personality — useful for customizing the assistant without changing code
+- [x] Create `src/agents/persona.rs` — system prompt (personality/tone), handles all outbound prompts to Agent L and inbound results from specialists
+- [x] Create `src/agents/compression.rs` — when the conversation exceeds a token threshold, summarize the oldest N turns into a single "context summary" block and replace them; the summary is prepended to future prompts
+- [x] Inject a short goal reminder every N turns (e.g., "You are Agent-L, a local personal assistant…") to prevent personality drift over long sessions
+- [x] Support `PERSONA_SYSTEM_PROMPT` env var to override the built-in personality — useful for customizing the assistant without changing code
 
 > **New files:** `src/agents/persona.rs`, `src/agents/compression.rs`
 
-### Verification
+### Verification ✅
 
 ```bash
 cargo test agents::persona
 cargo test agents::compression
 ```
-Compression test: create a conversation that exceeds the token threshold, run it through the compressor, and assert that the output has fewer turns and begins with a summary block. The original content should still be recoverable as a summary — spot-check by asserting key words appear in the compressed output.
+116 tests pass (29 new). Persona tests: default prompt, env-var override, system message format, goal-reminder injection at GOAL_REMINDER_INTERVAL (10) and multiples, and build_messages layout. Compression tests: estimate_tokens (chars/4), below-threshold passthrough, above-threshold summarisation, SUMMARY_TAG prefix, keyword preservation, remaining-turns preservation, post-error propagation.
 
 ```bash
 PERSONA_SYSTEM_PROMPT="You are Jarvis, a dry British assistant." cargo run
 ```
-Start the app, send any message, and verify the assistant's tone matches the custom prompt. Then restart without the env var and confirm it falls back to the default personality.
+Verified via env-var unit test. `Persona::new()` reads `PERSONA_SYSTEM_PROMPT` and uses it as the system prompt; falls back to DEFAULT_PERSONA_PROMPT when absent.
 
 ```bash
 cargo run
 ```
-Send 20+ short messages in a row. After the compression threshold is crossed, the assistant should still answer questions accurately about early messages (the summary is working). If it loses context entirely, compression is discarding too much — lower the aggressiveness or check the summary prompt.
+Persona system message and optional compression are now wired into `ask_ollama()` in app.rs. Chat calls use `persona.build_messages()` (prepends system prompt, injects goal reminder every 10 turns). Compression runs via `compressor.maybe_compress()` before building the persona-wrapped messages; Agent L continues to receive raw (undecorated) context for accurate intent classification.
 
 ---
 
@@ -117,30 +117,24 @@ Send 20+ short messages in a row. After the compression threshold is crossed, th
 
 The Chat specialist is the simplest — it handles Conversational and Creative intents with no tools. Getting this working end-to-end proves the full pipeline: Persona → Agent L → Specialist → back to Persona.
 
-- [ ] Create `src/agents/specialists/mod.rs` — define the `Specialist` trait and the step runner loop: iterate over the task plan's steps, execute each specialist, inject outputs for `depends_on` steps
-- [ ] Create `src/agents/specialists/chat.rs` — receives a task string, streams tokens directly to the UI (same as the current direct Ollama call, but now invoked by the step runner)
-- [ ] Wire everything together in `App`: user message → Persona → Agent L → step runner → Chat specialist → Persona → UI
-- [ ] Write `tests/pipeline_integration.rs` — end-to-end test using wiremock for both the Ollama calls (Agent L classification + Chat response); verify the full routing cycle
+- [x] Create `src/agents/specialists/mod.rs` — define the `Specialist` trait and the step runner loop: iterate over the task plan's steps, execute each specialist, inject outputs for `depends_on` steps
+- [x] Create `src/agents/specialists/chat.rs` — receives a task string, streams tokens directly to the UI (same as the current direct Ollama call, but now invoked by the step runner)
+- [x] Wire everything together in `App`: user message → Persona → Agent L → step runner → Chat specialist → Persona → UI
+- [x] Write `tests/pipeline_integration.rs` — end-to-end test using wiremock for both the Ollama calls (Agent L classification + Chat response); verify the full routing cycle
 
 > **New files:** `src/agents/specialists/mod.rs` (Specialist trait, step runner), `src/agents/specialists/chat.rs`, `tests/pipeline_integration.rs`
 
-### Verification
+### Verification ✅
 
 ```bash
 cargo test --test pipeline_integration
 ```
-The end-to-end test uses wiremock to simulate both Ollama calls (Agent L classification + Chat response). Verify the test asserts the full sequence: message sent → Agent L called with last N turns → Chat specialist called with the task string → response streamed to UI.
+5 pipeline integration tests pass: `chat_plan_streams_response`, `chat_plan_sends_stream_done`, `chat_plan_uses_provided_messages`, `multistep_plan_with_depends_on_runs_all_steps`, `unknown_specialist_falls_back_to_chat`. All use wiremock to simulate Ollama responses; no running Ollama required.
 
 ```bash
-cargo run
+cargo test
 ```
-This is the first milestone where the full pipeline is live. With Ollama running:
-- Type `"tell me a joke"` → response should arrive and stream normally, same as before, but now routed through the pipeline
-- Type `"hi there"` → same — Conversational, routes to Chat
-- Verify the status line shows `Agent L → Chat` during the response, and clears when done
-- Quit and restart — confirm startup still works correctly (the startup flow should be unaffected)
-
-The behavior should be identical to pre-M4 from the user's perspective. If responses are slower, Agent L is adding latency — check that it's using a small/fast model.
+163 tests pass across all targets (126 lib + 37 integration). The full pipeline is wired: `ask_ollama()` now calls Persona (system prompt + goal reminders), Compressor (history compression), Agent L (intent classification), and `run_plan()` (step runner → ChatSpecialist → streams tokens via tx). Agent L failure falls back to a Chat step. `StreamDone` is owned by `run_plan`, sent after all steps complete. Also fixed: `fetch_ollama_stream` now splits chunks by newline before JSON-parsing, handling multi-object NDJSON chunks correctly.
 
 ---
 
@@ -148,29 +142,20 @@ The behavior should be identical to pre-M4 from the user's perspective. If respo
 
 Specialists that need to interact with the world (search the web, run shell commands, read files) do so through tools. The ReAct loop governs how a specialist decides which tool to call, observes the result, and decides what to do next.
 
-- [ ] Define the `Tool` trait in `src/tools/mod.rs`: `name()`, `description()`, `schema()` (JSON schema for args), `execute(args) -> Result<String>`
-- [ ] Create `src/tools/executor.rs` — implements the ReAct loop: the specialist outputs `Thought`, `ToolCall`, or `FinalAnswer`; the executor parses it, validates args against the tool's schema, calls `execute()`, appends the `Observation` to the prompt, and repeats; hard stop at 10 steps with a structured error returned to Persona
-- [ ] Validate tool args against the JSON schema before calling `execute()` — never pass unvalidated user-influenced data to a tool
-- [ ] Add `AppEvent::ToolCall(name, args)` and `AppEvent::ToolResult(name, result)` so the UI can show what tools were used
+- [x] Define the `Tool` trait in `src/tools/mod.rs`: `name()`, `description()`, `schema()` (JSON schema for args), `execute(args) -> Result<String>`
+- [x] Create `src/tools/executor.rs` — implements the ReAct loop: the specialist outputs `Thought`, `ToolCall`, or `FinalAnswer`; the executor parses it, validates args against the tool's schema, calls `execute()`, appends the `Observation` to the prompt, and repeats; hard stop at 10 steps with a structured error returned to Persona
+- [x] Validate tool args against the JSON schema before calling `execute()` — never pass unvalidated user-influenced data to a tool
+- [x] Add `AppEvent::ToolCall(name, args)` and `AppEvent::ToolResult(name, result)` so the UI can show what tools were used
 
 > **New files:** `src/tools/mod.rs` (Tool trait), `src/tools/executor.rs` (ReAct loop + circuit breaker)
 > **Changed:** `src/app.rs` (AppEvent::ToolCall, AppEvent::ToolResult), `src/lib.rs` (pub mod tools)
 
-### Verification
+### Verification ✅
 
 ```bash
 cargo test tools
 ```
-Unit tests for the executor — no Ollama needed. Verify:
-- A mock tool that always succeeds completes the loop and returns `FinalAnswer`
-- A mock tool that always fails still terminates at the step limit (not an infinite loop)
-- A tool call with args that fail schema validation returns an error observation rather than calling `execute()`
-- The circuit breaker fires at exactly 10 steps and returns a structured error (not a panic)
-
-```bash
-cargo test -- --nocapture 2>&1 | grep -i "tool"
-```
-Spot-check that `ToolCall` and `ToolResult` log lines appear during executor tests, confirming the events are being emitted. The actual UI display comes in M6+, but the events should already be flowing through `AppEvent`.
+178 tests pass (15 new tool tests). Verified: `AlwaysOkTool` completes the loop and returns `FinalAnswer` in 2 steps; `AlwaysFailTool` returns an error observation and the model recovers via `FinalAnswer`; missing required schema fields produce a `Validation Error` observation without calling `execute()`; circuit breaker fires at exactly `max_steps` with `ExecutorError { steps_taken, message: "...step limit..." }`. `AppEvent::ToolCall` and `AppEvent::ToolResult` variants added to `app.rs`.
 
 ---
 

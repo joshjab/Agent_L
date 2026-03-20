@@ -3,6 +3,7 @@ mod app;
 mod config;
 mod ollama;
 mod startup;
+mod tools;
 mod ui;
 
 use std::io;

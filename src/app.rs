@@ -25,6 +25,12 @@ pub enum AppEvent {
     StartupUpdate(StartupState),
     /// Agent L has decided how to route the user's message.
     RouteDecision(TaskPlan),
+    /// A specialist is about to invoke a tool.
+    ToolCall { name: String, args: serde_json::Value },
+    /// A tool has returned a result.
+    ToolResult { name: String, result: String },
+    /// Token-usage stats from one Ollama call (prompt tokens in, generated tokens out).
+    TokenStats { prompt: u32, generated: u32 },
 }
 
 pub struct App {
@@ -38,6 +44,9 @@ pub struct App {
     pub model_name: String,
     pub base_url: String,
     pub token_count: usize,
+    /// Actual prompt token count from the most recent Chat call (prompt_eval_count).
+    /// This represents the full conversation context currently loaded in the model.
+    pub context_tokens: u32,
     pub exit: bool,
     pub startup_state: StartupState,
     pub tick: usize,
@@ -70,6 +79,7 @@ impl App {
             model_name: config.model_name,
             base_url: config.base_url,
             token_count: 0,
+            context_tokens: 0,
             content_height: 0,
             terminal_height: 10,
             auto_scroll: true,
@@ -99,6 +109,7 @@ impl App {
             model_name: config.model_name,
             base_url: config.base_url,
             token_count: 0,
+            context_tokens: 0,
             route_decision: None,
             tx,
             rx,
@@ -121,7 +132,7 @@ impl App {
 
         // 2. Serialize NOW — placeholder not yet added.
         //    This slice is also the context Agent L receives for classification.
-        let messages: Vec<serde_json::Value> = self.history.iter().map(|m| {
+        let raw_messages: Vec<serde_json::Value> = self.history.iter().map(|m| {
             serde_json::json!({
                 "role": match m.role { Role::User => "user", Role::Assistant => "assistant" },
                 "content": m.content
@@ -136,13 +147,35 @@ impl App {
         let tx = self.tx.clone();
         let chat_url = format!("{}/api/chat", self.base_url);
         let model = self.model_name.clone();
+        // Count user messages so far (for goal-reminder injection).
+        let turn_count = self.history.iter().filter(|m| matches!(m.role, Role::User)).count();
+        // Capture the most recent context size so the compressor can use the
+        // real token count rather than the char/4 estimate.
+        let current_ctx = if self.context_tokens > 0 { Some(self.context_tokens) } else { None };
 
         tokio::spawn(async move {
-            // Step A: run Agent L to classify intent and emit a RouteDecision.
-            let agent = crate::agents::orchestrator::OrchestratorAgent::new(&model);
+            use crate::agents::orchestrator::{AgentKind, IntentType, OrchestratorAgent, PlanStep, TaskPlan};
+
+            let persona = crate::agents::persona::Persona::new();
+            let compressor = crate::agents::compression::Compressor::new();
+
+            // Step A: optionally compress old turns, then build persona-wrapped messages.
+            let compressed = compressor
+                .maybe_compress(raw_messages.clone(), &model, current_ctx, |req| {
+                    let url = chat_url.clone();
+                    async move { crate::ollama::post_json(&url, req).await }
+                })
+                .await
+                .unwrap_or(raw_messages.clone());
+
+            let messages = persona.build_messages(&compressed, turn_count);
+
+            // Step B: run Agent L to classify intent and emit a RouteDecision.
+            //         Agent L sees the raw (undecorated) context — no persona wrapper.
+            let agent = OrchestratorAgent::new(&model);
             let agent_url = chat_url.clone();
-            let context = messages.clone();
-            if let Ok(plan) = crate::agents::call_with_retry(
+            let context = raw_messages.clone();
+            let plan = match crate::agents::call_with_retry(
                 &agent,
                 &context,
                 |req| {
@@ -153,11 +186,31 @@ impl App {
             )
             .await
             {
-                let _ = tx.send(AppEvent::RouteDecision(plan));
-            }
+                Ok(p) => {
+                    let _ = tx.send(AppEvent::RouteDecision(p.clone()));
+                    p
+                }
+                Err(_) => {
+                    // Agent L failed — fall back to a simple Chat step.
+                    let fallback = TaskPlan {
+                        intent_type: IntentType::Conversational,
+                        steps: vec![PlanStep {
+                            agent: AgentKind::Chat,
+                            task: "Respond to the user's message.".into(),
+                            depends_on: None,
+                        }],
+                    };
+                    let _ = tx.send(AppEvent::RouteDecision(fallback.clone()));
+                    fallback
+                }
+            };
 
-            // Step B: stream the actual chat response.
-            let _ = crate::ollama::fetch_ollama_stream(&chat_url, &model, messages, tx).await;
+            // Step C: run the specialist step runner.
+            // StreamDone is sent by run_plan after all steps complete.
+            let _ = crate::agents::specialists::run_plan(
+                &plan, &messages, &model, &chat_url, tx,
+            )
+            .await;
         });
     }
 
@@ -174,6 +227,16 @@ impl App {
                 AppEvent::StreamDone => { self.is_loading = false; }
                 AppEvent::StartupUpdate(state) => { self.startup_state = state; }
                 AppEvent::RouteDecision(plan) => { self.route_decision = Some(plan); }
+                AppEvent::TokenStats { prompt, .. } => {
+                    // Overwrite with the latest call's prompt_eval_count — this is
+                    // the actual context size currently loaded in the model.
+                    if prompt > 0 {
+                        self.context_tokens = prompt;
+                    }
+                }
+                AppEvent::ToolCall { .. } | AppEvent::ToolResult { .. } => {
+                    // Tool events are reserved for future UI display (M10 trace panel).
+                }
             }
         }
 

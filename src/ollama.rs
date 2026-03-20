@@ -52,21 +52,41 @@ pub async fn fetch_ollama_stream(
     while let Some(item) = stream.next().await {
         match item {
             Ok(bytes) => {
-                // Try to parse. If it fails, report the raw string for debugging.
-                match serde_json::from_slice::<serde_json::Value>(&bytes) {
-                    Ok(body) => {
-                        if let Some(token) = body["message"]["content"].as_str() {
-                            let _ = tx.send(AppEvent::Token(token.to_string()));
+                // Ollama sends newline-delimited JSON (NDJSON). A single HTTP
+                // chunk may contain multiple complete JSON objects separated by
+                // newlines, so we split and parse each line individually.
+                let raw = String::from_utf8_lossy(&bytes);
+                for line in raw.lines() {
+                    let line = line.trim();
+                    if line.is_empty() {
+                        continue;
+                    }
+                    match serde_json::from_str::<serde_json::Value>(line) {
+                        Ok(body) => {
+                            if let Some(token) = body["message"]["content"].as_str() {
+                                if !token.is_empty() {
+                                    let _ = tx.send(AppEvent::Token(token.to_string()));
+                                }
+                            }
+                            // The final chunk (done: true) carries token-usage stats.
+                            if body["done"].as_bool() == Some(true) {
+                                let prompt = body["prompt_eval_count"]
+                                    .as_u64().unwrap_or(0) as u32;
+                                let generated = body["eval_count"]
+                                    .as_u64().unwrap_or(0) as u32;
+                                if prompt > 0 || generated > 0 {
+                                    let _ = tx.send(AppEvent::TokenStats { prompt, generated });
+                                }
+                            }
                         }
-                    },
-                    Err(_) => {
-                        // Sometimes Ollama sends multiple JSON objects in one chunk
-                        // Let's try to convert the raw bytes to a string to see them
-                        let raw = String::from_utf8_lossy(&bytes);
-                        let _ = tx.send(AppEvent::Token(format!("\n[Parse Error on: {}]\n", raw)));
+                        Err(_) => {
+                            let _ = tx.send(AppEvent::Token(
+                                format!("\n[Parse Error on: {line}]\n"),
+                            ));
+                        }
                     }
                 }
-            },
+            }
             Err(e) => {
                 let _ = tx.send(AppEvent::Token(format!("\n[Stream Error: {}]\n", e)));
             }

@@ -37,12 +37,12 @@ impl Widget for &App {
                 .render(chunks[1], buf);
         }
 
-        // Status line: model, tokens, optional routing decision
+        // Status line: model, token counts (↑ prompt / ↓ generated), optional routing decision
         let mut status_spans: Vec<Span> = vec![
             " MODEL: ".into(),
             Span::styled(self.model_name.clone(), Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
-            " | TOKENS: ".into(),
-            Span::styled(self.token_count.to_string(), Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)),
+            " | ctx: ".into(),
+            Span::styled(self.context_tokens.to_string(), Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
         ];
         if let Some(plan) = &self.route_decision {
             status_spans.push(" | ".into());

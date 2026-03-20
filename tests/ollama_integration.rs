@@ -134,14 +134,16 @@ async fn missing_content_field_no_token() {
 }
 
 #[tokio::test]
-async fn empty_content_field_sends_empty_token() {
+async fn empty_content_field_does_not_send_token() {
+    // Empty content in the final done chunk should NOT produce a Token event —
+    // empty tokens are noise and add nothing to the UI.
     let server = MockServer::start().await;
 
     Mock::given(method("POST"))
         .and(path("/api/chat"))
         .respond_with(
             ResponseTemplate::new(200)
-                .set_body_json(serde_json::json!({"message": {"content": ""}})),
+                .set_body_json(serde_json::json!({"message": {"content": ""}, "done": false})),
         )
         .mount(&server)
         .await;
@@ -152,10 +154,39 @@ async fn empty_content_field_sends_empty_token() {
 
     let events = collect_events(&mut rx);
     assert!(
-        events.iter().any(|e| matches!(e, AppEvent::Token(t) if t.is_empty())),
-        "expected Token(\"\")"
+        !events.iter().any(|e| matches!(e, AppEvent::Token(t) if t.is_empty())),
+        "empty-content chunks must not produce Token(\"\") events"
     );
     assert!(events.iter().any(|e| matches!(e, AppEvent::StreamDone)));
+}
+
+#[tokio::test]
+async fn done_chunk_emits_token_stats() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/api/chat"))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_string(
+                "{\"message\":{\"content\":\"hi\"},\"done\":false}\n\
+                 {\"message\":{\"content\":\"\"},\"done\":true,\"prompt_eval_count\":42,\"eval_count\":7}\n"
+            ),
+        )
+        .mount(&server)
+        .await;
+
+    let (tx, mut rx) = mpsc::unbounded_channel();
+    let url = format!("{}/api/chat", server.uri());
+    fetch_ollama_stream(&url, "m", vec![], tx).await.unwrap();
+
+    let events = collect_events(&mut rx);
+    let stats = events.iter().find_map(|e| {
+        if let AppEvent::TokenStats { prompt, generated } = e {
+            Some((*prompt, *generated))
+        } else {
+            None
+        }
+    });
+    assert_eq!(stats, Some((42, 7)), "expected TokenStats(42, 7) from done chunk");
 }
 
 #[tokio::test]
