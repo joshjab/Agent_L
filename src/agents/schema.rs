@@ -15,6 +15,8 @@ impl std::fmt::Display for ParseError {
 impl std::error::Error for ParseError {}
 
 /// Returns `value[field]` or a `ParseError` if the field is absent.
+/// Used by future specialist agents (M7+) for structured response parsing.
+#[allow(dead_code)]
 pub fn require_field<'a>(value: &'a Value, field: &str) -> Result<&'a Value, ParseError> {
     value.get(field).ok_or_else(|| ParseError {
         message: format!("missing required field '{field}'"),
@@ -22,6 +24,8 @@ pub fn require_field<'a>(value: &'a Value, field: &str) -> Result<&'a Value, Par
 }
 
 /// Returns `value[field]` as `&str`, or a `ParseError` if absent or not a string.
+/// Used by future specialist agents (M7+) for structured response parsing.
+#[allow(dead_code)]
 pub fn require_str<'a>(value: &'a Value, field: &str) -> Result<&'a str, ParseError> {
     require_field(value, field)?.as_str().ok_or_else(|| ParseError {
         message: format!("field '{field}' is not a string"),

@@ -1,4 +1,7 @@
 pub mod chat;
+pub mod code;
+
+use std::path::Path;
 
 use serde_json::Value;
 use tokio::sync::mpsc;
@@ -32,6 +35,7 @@ pub async fn run_plan(
     messages: &[Value],
     model: &str,
     chat_url: &str,
+    working_dir: &Path,
     tx: mpsc::UnboundedSender<AppEvent>,
 ) -> Result<(), SpecialistError> {
     // Collect per-step outputs for `depends_on` injection.
@@ -58,10 +62,27 @@ pub async fn run_plan(
                         e
                     })?
             }
+            AgentKind::Code => {
+                had_streaming_step = true;
+                let specialist =
+                    code::CodeSpecialist::new(model, chat_url, working_dir);
+                let output = specialist
+                    .run(&step.task, tx.clone())
+                    .await
+                    .map_err(|msg| {
+                        let _ = tx.send(AppEvent::StreamDone);
+                        SpecialistError { message: msg }
+                    })?;
+                // For one-off scope, `run()` returns the full output string;
+                // stream it as tokens so the user sees it in the chat.
+                if !output.is_empty() {
+                    let _ = tx.send(AppEvent::Token(output.clone()));
+                }
+                output
+            }
             // Not yet implemented — return a silent placeholder so `depends_on`
             // chains still get *something*, but don't stream duplicate responses.
-            AgentKind::Code
-            | AgentKind::Search
+            AgentKind::Search
             | AgentKind::Shell
             | AgentKind::Calendar
             | AgentKind::Memory => {
@@ -135,7 +156,7 @@ mod tests {
         let url = format!("{}/api/chat", server.uri());
         let plan = chat_plan("say hi");
 
-        run_plan(&plan, &[], "m", &url, tx).await.unwrap();
+        run_plan(&plan, &[], "m", &url, std::path::Path::new("."), tx).await.unwrap();
 
         let mut tokens = Vec::new();
         let mut saw_done = false;
@@ -158,7 +179,7 @@ mod tests {
         };
         let (tx, mut rx) = mpsc::unbounded_channel();
 
-        run_plan(&plan, &[], "m", "http://unused", tx).await.unwrap();
+        run_plan(&plan, &[], "m", "http://unused", std::path::Path::new("."), tx).await.unwrap();
 
         let mut saw_done = false;
         while let Ok(event) = rx.try_recv() {
@@ -191,7 +212,7 @@ mod tests {
         let (tx, mut rx) = mpsc::unbounded_channel();
         let url = format!("{}/api/chat", server.uri());
 
-        run_plan(&plan, &[], "m", &url, tx).await.unwrap();
+        run_plan(&plan, &[], "m", &url, std::path::Path::new("."), tx).await.unwrap();
 
         let tokens: Vec<_> = std::iter::from_fn(|| rx.try_recv().ok())
             .filter_map(|e| if let AppEvent::Token(t) = e { Some(t) } else { None })
@@ -232,7 +253,7 @@ mod tests {
         let (tx, mut rx) = mpsc::unbounded_channel();
         let url = format!("{}/api/chat", server.uri());
 
-        run_plan(&plan, &[], "m", &url, tx).await.unwrap();
+        run_plan(&plan, &[], "m", &url, std::path::Path::new("."), tx).await.unwrap();
 
         let tokens: String = std::iter::from_fn(|| rx.try_recv().ok())
             .filter_map(|e| if let AppEvent::Token(t) = e { Some(t) } else { None })
@@ -267,7 +288,7 @@ mod tests {
         let (tx, mut rx) = mpsc::unbounded_channel();
         let url = format!("{}/api/chat", server.uri());
 
-        run_plan(&plan, &[], "m", &url, tx).await.unwrap();
+        run_plan(&plan, &[], "m", &url, std::path::Path::new("."), tx).await.unwrap();
 
         let tokens: Vec<_> = std::iter::from_fn(|| rx.try_recv().ok())
             .filter_map(|e| if let AppEvent::Token(t) = e { Some(t) } else { None })
@@ -300,7 +321,7 @@ mod tests {
         let (tx, mut rx) = mpsc::unbounded_channel();
         let url = format!("{}/api/chat", server.uri());
 
-        run_plan(&plan, &[], "m", &url, tx).await.unwrap();
+        run_plan(&plan, &[], "m", &url, std::path::Path::new("."), tx).await.unwrap();
 
         let tokens: String = std::iter::from_fn(|| rx.try_recv().ok())
             .filter_map(|e| if let AppEvent::Token(t) = e { Some(t) } else { None })
@@ -321,7 +342,7 @@ mod tests {
         let url = format!("http://127.0.0.1:{port}/api/chat");
         let plan = chat_plan("task");
 
-        let result = run_plan(&plan, &[], "m", &url, tx).await;
+        let result = run_plan(&plan, &[], "m", &url, std::path::Path::new("."), tx).await;
         assert!(result.is_err());
     }
 }

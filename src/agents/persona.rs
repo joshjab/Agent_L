@@ -26,7 +26,8 @@ impl Persona {
         Self { system_prompt }
     }
 
-    /// Create a Persona with a specific prompt. Use in tests.
+    /// Create a Persona with a specific prompt. Used in unit tests only.
+    #[cfg(test)]
     pub fn from_prompt(prompt: impl Into<String>) -> Self {
         Self { system_prompt: prompt.into() }
     }

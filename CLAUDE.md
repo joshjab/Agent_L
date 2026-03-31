@@ -2,6 +2,12 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+## KB Context
+
+On session start: read `_KB/projects/active/agent-l/overview.md`, `doc/ROADMAP.md`, `doc/ARCHITECTURE.md`.
+
+After completing a milestone or ending a session: update `_KB/projects/active/agent-l/overview.md` with current milestone, decisions made, and what's next. Tick off completed items in `doc/ROADMAP.md` and update `doc/ARCHITECTURE.md` if any structural decisions changed.
+
 ## Commands
 
 ```bash
@@ -68,6 +74,11 @@ After completing any work tied to `doc/ROADMAP.md`:
 
 Do this immediately after the work is done, not at the end of a session.
 
+### Writing style for ROADMAP entries
+
+Write ROADMAP tasks and verification steps as if explaining to a junior developer — use plain language, spell out what each step does and why, avoid jargon, and keep bullet points short and concrete. If a step involves a new concept (e.g., ReAct loop, wiremock FIFO), add a one-sentence explanation in parentheses.
+
+
 ### Testing rules
 
 For every function you write, always add at minimum:
@@ -75,6 +86,8 @@ For every function you write, always add at minimum:
 - one **sad-path** unit test (invalid/edge-case input, expected error or fallback)
 
 Place unit tests in a `#[cfg(test)] mod tests { ... }` block at the bottom of the same file. Integration tests go in `tests/`.
+
+**Write tests before implementation (TDD).** For each ROADMAP task, write the failing tests first, verify they fail, then write the implementation to make them pass. Do not batch tests up and write them all at the end of a milestone.
 
 ### Testing approach
 

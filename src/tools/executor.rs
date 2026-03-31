@@ -1,3 +1,7 @@
+// ReAct loop infrastructure for M7 (Search) and M8 (Shell) specialists.
+// Nothing calls this yet — suppressed until those milestones are implemented.
+#![allow(dead_code)]
+
 use std::collections::HashMap;
 
 use serde_json::{json, Value};

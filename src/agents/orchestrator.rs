@@ -135,8 +135,11 @@ intent_type rules:
 - Factual: any question about real-world facts, current events, prices, or live data \
   → route to Search; NEVER answer from your own knowledge
 - Conversational: greetings, opinions, casual back-and-forth → route to Chat
-- Creative: writing, brainstorming, summarizing → route to Chat
-- Task: actions like running code, scheduling, file operations → route to the relevant specialist
+- Creative: prose writing, brainstorming, summarizing NON-CODE content → route to Chat. \
+  IMPORTANT: writing or generating CODE is NOT Creative — it is Task with agent=Code
+- Task: any request to write, generate, create, or modify code or scripts; \
+  running commands; scheduling; file operations → route to the relevant specialist. \
+  Use agent=Code for ALL code/script generation and modification requests.
 
 Output exactly one JSON object matching the schema. Max 5 steps. \
 Use depends_on (0-indexed) only when a later step needs the output of an earlier step.";

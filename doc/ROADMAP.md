@@ -159,32 +159,49 @@ cargo test tools
 
 ---
 
-## M6 — Specialist: Code
+## M6 — Specialist: Code (Claude Code Integration)
 
-The Code specialist handles code generation, explanation, and review. It uses the ReAct loop from M5 to call code-specific tools.
+Instead of using Ollama for code tasks, the Code specialist delegates to the `claude` CLI (Claude Code). This means Agent-L can handle real coding work — generating scripts, explaining files, building features — by letting Claude Code run agentically with its own tools (read, write, bash, etc.).
 
-- [ ] Create `src/agents/specialists/code.rs` — receives a task (e.g., "explain startup.rs", "write a function that…"), uses tools to read files and run snippets, returns a structured result
-- [ ] Create `src/tools/code_tools.rs` with tools: `read_file` (read a path relative to working dir), `run_snippet` (execute a small code block in a sandbox, capture stdout/stderr), `write_file` (write content to a path)
-- [ ] Format code output as fenced code blocks in the ratatui UI with a language label
-- [ ] Tests: use a mock tool executor to verify the ReAct loop terminates correctly on success and on step limit
+The specialist figures out which of two modes to use based on the task:
 
-> **New files:** `src/agents/specialists/code.rs`, `src/tools/code_tools.rs`
+- **One-off script** — the user wants a small script or snippet (e.g., "write a Python script that renames files"). The specialist creates a temporary sandbox directory, runs `claude` non-interactively inside it, captures the output, and returns the result to Persona. The sandbox is cleaned up afterwards.
+- **Whole project** — the user wants something larger or ongoing (e.g., "add a logging module to this project"). The specialist spawns `claude` as a background subprocess, streams progress events back to the TUI so the user can see what's happening, and reports when it's done.
 
-### Verification
+**What to build:**
+
+- [x] Create `src/tools/claude_code.rs` — a tool that invokes the `claude` CLI as a subprocess. It takes a prompt string and a working directory, runs `claude --print "<prompt>"` (non-interactive mode), captures stdout/stderr, and returns the output as a `String`. Include a timeout so a hung process doesn't block the app forever.
+- [x] Add a scope detector to `src/agents/specialists/code.rs` — sends a short classification prompt to Ollama (non-streaming, JSON schema enforced like Agent L does) asking whether the task is a self-contained one-off script or a change to an existing project. Returns `TaskScope::OneOff` or `TaskScope::Project`. This reuses the `Agent` trait from M1 so the retry/validation logic is already handled.
+- [x] Implement the **one-off path** in `code.rs`: create a `tempdir`, call the `claude_code` tool with the task prompt and the temp dir as the working directory, return the output to Persona, then delete the temp dir.
+- [x] Implement the **project path** in `code.rs`: spawn `claude` as a background `tokio::process::Child` in the project's working directory, read its stdout line-by-line, and send each line as an `AppEvent::Token` so it streams into the TUI chat. When the process exits, send `AppEvent::StreamDone`.
+- [x] Add a `TaskScope` field to the `RouteDecision` event so the UI status line can show `Agent L → Code (one-off)` or `Agent L → Code (project)`.
+- [x] Format code blocks in the output: scan the returned text for fenced code blocks (` ``` `) and render them with a language label in the ratatui UI (a different background color or a border is enough — no need for full syntax highlighting yet).
+- [x] Tests: write unit tests for the scope detector (check that known keywords route correctly). Write an integration test that uses a mock subprocess (or a real `echo` command) to verify the one-off path captures output and the project path streams it.
+
+> **New files:** `src/tools/claude_code.rs`, `src/agents/specialists/code.rs`
+> **Changed:** `src/app.rs` (TaskScope in RouteDecision), `src/ui.rs` (fenced code block rendering)
+
+### Verification ✅
 
 ```bash
 cargo test agents::specialists::code
+cargo test tools::claude_code
 ```
-Mock executor test: verify the specialist calls `read_file` when given a task like "explain this file", and that the loop terminates after `FinalAnswer` is reached.
+223 tests pass (38 new). Verified:
+- ✅ `ClaudeCodeInvoker::run()` captures stdout, respects working dir, returns Err on non-zero exit or timeout, returns Err when binary not found
+- ✅ `ClaudeCodeInvoker::run_streaming()` sends each output line as `AppEvent::Token`, returns Err on non-zero exit or timeout
+- ✅ `ScopeDetector` classifies tasks: mock Ollama returns `{"scope":"one_off"}` → `OneOff`; `{"scope":"project"}` → `Project`; invalid JSON triggers retry; all 3 attempts exhausted returns `AgentError`
+- ✅ `CodeSpecialist::run()` sends `AppEvent::ScopeDecision` before executing; one-off path uses a temp dir (not the project dir) and returns the full output string; project path streams tokens; scope detection failure or process failure returns Err
+- ✅ `AppEvent::ScopeDecision` stores scope in `App.code_scope`; `RouteDecision` resets it for each new message
+- ✅ Status line shows `Agent L → Code (one-off)` or `Agent L → Code (project)` when scope is known
+- ✅ Fenced code blocks render with a yellow language label header, green code lines, and a gray closing line; bold markers inside code blocks are not processed
 
 ```bash
 cargo run
 ```
-With Ollama running:
-- Type `"explain what startup.rs does"` → status shows `Agent L → Code`; you should see a brief `read_file(src/startup.rs)` indicator in the UI, then a structured explanation of the startup logic
-- Type `"what does the App struct contain?"` → should similarly read `app.rs` and describe the fields
-- Type `"write a hello world function in Rust"` → should respond with a fenced Rust code block (` ```rust `) with a language label, not plain text
-- Verify code blocks are visually distinct from prose in the TUI (syntax label, different color or border)
+With Ollama and the `claude` CLI both available:
+- Type `"write a bash script that lists all .rs files"` → status shows `Agent L → Code (one-off)`; a bash fenced code block appears in the chat
+- Type `"add a --verbose flag to the config module"` → status shows `Agent L → Code (project)`; you see streaming output in the chat as Claude Code works, then a summary when it's done
 
 ---
 

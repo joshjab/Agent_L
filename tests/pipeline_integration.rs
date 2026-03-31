@@ -41,7 +41,7 @@ async fn chat_plan_streams_response() {
     let (tx, mut rx) = mpsc::unbounded_channel();
     let url = format!("{}/api/chat", server.uri());
 
-    run_plan(&conversational_plan(), &[], "test-model", &url, tx)
+    run_plan(&conversational_plan(), &[], "test-model", &url, std::path::Path::new("."), tx)
         .await
         .unwrap();
 
@@ -65,7 +65,7 @@ async fn chat_plan_sends_stream_done() {
     let (tx, mut rx) = mpsc::unbounded_channel();
     let url = format!("{}/api/chat", server.uri());
 
-    run_plan(&conversational_plan(), &[], "m", &url, tx)
+    run_plan(&conversational_plan(), &[], "m", &url, std::path::Path::new("."), tx)
         .await
         .unwrap();
 
@@ -94,7 +94,7 @@ async fn chat_plan_uses_provided_messages() {
         json!({"role": "user", "content": "ping"}),
     ];
 
-    run_plan(&conversational_plan(), &messages, "m", &url, tx)
+    run_plan(&conversational_plan(), &messages, "m", &url, std::path::Path::new("."), tx)
         .await
         .unwrap();
 
@@ -153,7 +153,7 @@ async fn multistep_plan_with_depends_on_runs_all_steps() {
     let (tx, mut rx) = mpsc::unbounded_channel();
     let url = format!("{}/api/chat", server.uri());
 
-    run_plan(&plan, &[], "m", &url, tx).await.unwrap();
+    run_plan(&plan, &[], "m", &url, std::path::Path::new("."), tx).await.unwrap();
 
     let tokens: String = std::iter::from_fn(|| rx.try_recv().ok())
         .filter_map(|e| if let AppEvent::Token(t) = e { Some(t) } else { None })
@@ -187,7 +187,7 @@ async fn search_only_plan_streams_exactly_once() {
     let (tx, mut rx) = mpsc::unbounded_channel();
     let url = format!("{}/api/chat", server.uri());
 
-    run_plan(&plan, &[], "m", &url, tx).await.unwrap();
+    run_plan(&plan, &[], "m", &url, std::path::Path::new("."), tx).await.unwrap();
 
     let tokens: String = std::iter::from_fn(|| rx.try_recv().ok())
         .filter_map(|e| if let AppEvent::Token(t) = e { Some(t) } else { None })
@@ -221,7 +221,7 @@ async fn unknown_specialist_falls_back_to_chat() {
     let (tx, mut rx) = mpsc::unbounded_channel();
     let url = format!("{}/api/chat", server.uri());
 
-    run_plan(&plan, &[], "m", &url, tx).await.unwrap();
+    run_plan(&plan, &[], "m", &url, std::path::Path::new("."), tx).await.unwrap();
 
     let tokens: Vec<_> = std::iter::from_fn(|| rx.try_recv().ok())
         .filter_map(|e| if let AppEvent::Token(t) = e { Some(t) } else { None })

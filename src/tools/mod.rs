@@ -1,8 +1,11 @@
+pub mod claude_code;
 pub mod executor;
 
 use serde_json::Value;
 
 /// A tool that a specialist can invoke during the ReAct loop.
+/// Used by M7 (Search) and M8 (Shell) specialists.
+#[allow(dead_code)]
 ///
 /// All tool implementations must be `Send + Sync` so they can be called from
 /// async contexts without holding a mutex.

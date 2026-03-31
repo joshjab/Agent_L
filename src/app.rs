@@ -1,6 +1,7 @@
 use tokio::sync::mpsc;
 
 use crate::agents::orchestrator::TaskPlan;
+use crate::agents::specialists::code::TaskScope;
 use crate::startup::StartupTimings;
 
 pub enum Role { User, Assistant }
@@ -25,11 +26,17 @@ pub enum AppEvent {
     StartupUpdate(StartupState),
     /// Agent L has decided how to route the user's message.
     RouteDecision(TaskPlan),
-    /// A specialist is about to invoke a tool.
+    /// The Code specialist has determined whether the task is one-off or project.
+    ScopeDecision(TaskScope),
+    /// A specialist is about to invoke a tool. (M10: trace panel)
+    #[allow(dead_code)]
     ToolCall { name: String, args: serde_json::Value },
-    /// A tool has returned a result.
+    /// A tool has returned a result. (M10: trace panel)
+    #[allow(dead_code)]
     ToolResult { name: String, result: String },
     /// Token-usage stats from one Ollama call (prompt tokens in, generated tokens out).
+    /// `generated` is reserved for the M10 token budget display.
+    #[allow(dead_code)]
     TokenStats { prompt: u32, generated: u32 },
 }
 
@@ -53,6 +60,9 @@ pub struct App {
     /// The most recent routing decision made by Agent L. `None` until the
     /// first message is processed.
     pub route_decision: Option<TaskPlan>,
+    /// The scope the Code specialist detected for the current message.
+    /// `None` when no Code step has run this session.
+    pub code_scope: Option<TaskScope>,
 
     // Channel for the background worker to talk to the UI
     tx: mpsc::UnboundedSender<AppEvent>,
@@ -86,6 +96,7 @@ impl App {
             startup_state: StartupState::Connecting,
             tick: 0,
             route_decision: None,
+            code_scope: None,
             tx,
             rx,
         }
@@ -111,6 +122,7 @@ impl App {
             token_count: 0,
             context_tokens: 0,
             route_decision: None,
+            code_scope: None,
             tx,
             rx,
         }
@@ -207,8 +219,10 @@ impl App {
 
             // Step C: run the specialist step runner.
             // StreamDone is sent by run_plan after all steps complete.
+            let working_dir = std::env::current_dir()
+                .unwrap_or_else(|_| std::path::PathBuf::from("."));
             let _ = crate::agents::specialists::run_plan(
-                &plan, &messages, &model, &chat_url, tx,
+                &plan, &messages, &model, &chat_url, &working_dir, tx,
             )
             .await;
         });
@@ -226,7 +240,11 @@ impl App {
                 }
                 AppEvent::StreamDone => { self.is_loading = false; }
                 AppEvent::StartupUpdate(state) => { self.startup_state = state; }
-                AppEvent::RouteDecision(plan) => { self.route_decision = Some(plan); }
+                AppEvent::RouteDecision(plan) => {
+                    self.route_decision = Some(plan);
+                    self.code_scope = None; // reset scope for each new message
+                }
+                AppEvent::ScopeDecision(scope) => { self.code_scope = Some(scope); }
                 AppEvent::TokenStats { prompt, .. } => {
                     // Overwrite with the latest call's prompt_eval_count — this is
                     // the actual context size currently loaded in the model.
@@ -526,5 +544,40 @@ mod tests {
         app.update();
 
         assert_eq!(app.route_decision.as_ref().unwrap(), &search_plan);
+    }
+
+    // --- ScopeDecision ---
+
+    #[tokio::test]
+    async fn scope_decision_starts_as_none() {
+        let app = App::new_for_test();
+        assert!(app.code_scope.is_none());
+    }
+
+    #[tokio::test]
+    async fn scope_decision_event_stores_scope() {
+        use crate::agents::specialists::code::TaskScope;
+        let mut app = App::new_for_test();
+        app.sender_for_test()
+            .send(AppEvent::ScopeDecision(TaskScope::OneOff))
+            .unwrap();
+        app.update();
+        assert_eq!(app.code_scope, Some(TaskScope::OneOff));
+    }
+
+    #[tokio::test]
+    async fn route_decision_resets_code_scope() {
+        use crate::agents::specialists::code::TaskScope;
+        let mut app = App::new_for_test();
+        let tx = app.sender_for_test();
+
+        // Set a scope, then send a new RouteDecision — scope should be cleared.
+        tx.send(AppEvent::ScopeDecision(TaskScope::Project)).unwrap();
+        app.update();
+        assert_eq!(app.code_scope, Some(TaskScope::Project));
+
+        tx.send(AppEvent::RouteDecision(chat_plan())).unwrap();
+        app.update();
+        assert!(app.code_scope.is_none(), "RouteDecision should reset code_scope");
     }
 }

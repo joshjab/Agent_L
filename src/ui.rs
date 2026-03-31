@@ -6,6 +6,7 @@ use ratatui::{
     widgets::{Block, BorderType, Paragraph, Widget, Wrap},
 };
 use crate::agents::orchestrator::{AgentKind, IntentType, TaskPlan};
+use crate::agents::specialists::code::TaskScope;
 use crate::app::{App, Role, StartupState};
 
 const SPINNER: &[&str] = &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
@@ -47,7 +48,7 @@ impl Widget for &App {
         if let Some(plan) = &self.route_decision {
             status_spans.push(" | ".into());
             status_spans.push(Span::styled(
-                format_route_decision(plan),
+                format_route_decision(plan, self.code_scope.as_ref()),
                 Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
             ));
         }
@@ -176,14 +177,29 @@ fn render_chat(app: &App, area: Rect, buf: &mut Buffer) {
 /// - Factual        → `"Agent L → Search (Factual)"`
 /// - Creative       → `"Agent L → Chat (Creative)"`
 /// - Task (multi)   → `"Agent L → Shell + Code"`
-pub fn format_route_decision(plan: &TaskPlan) -> String {
+/// - Code + scope   → `"Agent L → Code (one-off)"` or `"Agent L → Code (project)"`
+pub fn format_route_decision(plan: &TaskPlan, code_scope: Option<&TaskScope>) -> String {
     let mut seen = std::collections::HashSet::new();
-    let agents: Vec<&str> = plan
+    let agents: Vec<String> = plan
         .steps
         .iter()
         .filter_map(|s| {
-            let label = agent_kind_label(&s.agent);
-            if seen.insert(label) { Some(label) } else { None }
+            let base = agent_kind_label(&s.agent);
+            if seen.insert(base) {
+                // Annotate Code with its scope when known.
+                if matches!(s.agent, AgentKind::Code) {
+                    if let Some(scope) = code_scope {
+                        let label = match scope {
+                            TaskScope::OneOff => "Code (one-off)",
+                            TaskScope::Project => "Code (project)",
+                        };
+                        return Some(label.to_string());
+                    }
+                }
+                Some(base.to_string())
+            } else {
+                None
+            }
         })
         .collect();
 
@@ -209,23 +225,65 @@ fn agent_kind_label(kind: &AgentKind) -> &'static str {
 }
 
 fn parse_simple_markdown(text: &str) -> Vec<Line<'_>> {
-    let mut lines = Vec::new();
+    let mut lines: Vec<Line<'_>> = Vec::new();
+    let mut in_code_block = false;
+
     for raw_line in text.lines() {
-        let mut spans = Vec::new();
-        if raw_line.contains("**") {
-            let parts: Vec<&str> = raw_line.split("**").collect();
-            for (i, part) in parts.iter().enumerate() {
-                if i % 2 == 1 {
-                    spans.push(Span::styled(*part, Style::default().add_modifier(Modifier::BOLD).fg(Color::Yellow)));
+        if raw_line.starts_with("```") {
+            if in_code_block {
+                // Closing fence — draw a bottom border.
+                lines.push(Line::from(Span::styled(
+                    "─────────────────────────────────────",
+                    Style::default().fg(Color::DarkGray),
+                )));
+                in_code_block = false;
+            } else {
+                // Opening fence — extract the optional language tag.
+                let lang = raw_line.trim_start_matches('`').trim();
+                let label = if lang.is_empty() {
+                    " ─── code ──────────────────────── ".to_string()
                 } else {
-                    spans.push(Span::raw(*part));
-                }
+                    format!(" ─── {} ──────────────────────── ", lang)
+                };
+                lines.push(Line::from(Span::styled(
+                    label,
+                    Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
+                )));
+                in_code_block = true;
             }
+        } else if in_code_block {
+            // Inside a code block: preserve the raw content, no bold processing.
+            lines.push(Line::from(Span::styled(
+                raw_line,
+                Style::default().fg(Color::Green),
+            )));
         } else {
-            spans.push(Span::raw(raw_line));
+            // Normal prose: process **bold** markers.
+            let mut spans = Vec::new();
+            if raw_line.contains("**") {
+                let parts: Vec<&str> = raw_line.split("**").collect();
+                for (i, part) in parts.iter().enumerate() {
+                    if i % 2 == 1 {
+                        spans.push(Span::styled(*part, Style::default().add_modifier(Modifier::BOLD).fg(Color::Yellow)));
+                    } else {
+                        spans.push(Span::raw(*part));
+                    }
+                }
+            } else {
+                spans.push(Span::raw(raw_line));
+            }
+            lines.push(Line::from(spans));
         }
-        lines.push(Line::from(spans));
     }
+
+    // If the message ends inside an unclosed code block, close it.
+    if in_code_block {
+        lines.push(Line::from(Span::styled(
+            "─────────────────────────────────────",
+            Style::default().fg(Color::DarkGray),
+        )));
+    }
+
     lines
 }
 
@@ -246,39 +304,66 @@ mod tests {
 
     #[test]
     fn route_conversational_shows_no_intent_suffix() {
-        let s = format_route_decision(&plan(IntentType::Conversational, &[AgentKind::Chat]));
+        let s = format_route_decision(&plan(IntentType::Conversational, &[AgentKind::Chat]), None);
         assert_eq!(s, "Agent L → Chat");
     }
 
     #[test]
     fn route_factual_shows_factual_suffix() {
-        let s = format_route_decision(&plan(IntentType::Factual, &[AgentKind::Search]));
+        let s = format_route_decision(&plan(IntentType::Factual, &[AgentKind::Search]), None);
         assert_eq!(s, "Agent L → Search (Factual)");
     }
 
     #[test]
     fn route_creative_shows_creative_suffix() {
-        let s = format_route_decision(&plan(IntentType::Creative, &[AgentKind::Chat]));
+        let s = format_route_decision(&plan(IntentType::Creative, &[AgentKind::Chat]), None);
         assert_eq!(s, "Agent L → Chat (Creative)");
     }
 
     #[test]
     fn route_task_multi_step_joins_with_plus() {
-        let s = format_route_decision(&plan(IntentType::Task, &[AgentKind::Shell, AgentKind::Code]));
+        let s = format_route_decision(&plan(IntentType::Task, &[AgentKind::Shell, AgentKind::Code]), None);
         assert_eq!(s, "Agent L → Shell + Code");
     }
 
     #[test]
     fn route_deduplicates_repeated_agents() {
         // Two steps with the same agent should appear only once
-        let s = format_route_decision(&plan(IntentType::Task, &[AgentKind::Chat, AgentKind::Chat]));
+        let s = format_route_decision(&plan(IntentType::Task, &[AgentKind::Chat, AgentKind::Chat]), None);
         assert_eq!(s, "Agent L → Chat");
     }
 
     #[test]
     fn route_preserves_agent_order() {
-        let s = format_route_decision(&plan(IntentType::Task, &[AgentKind::Search, AgentKind::Shell, AgentKind::Code]));
+        let s = format_route_decision(&plan(IntentType::Task, &[AgentKind::Search, AgentKind::Shell, AgentKind::Code]), None);
         assert_eq!(s, "Agent L → Search + Shell + Code");
+    }
+
+    #[test]
+    fn route_code_with_one_off_scope() {
+        let s = format_route_decision(
+            &plan(IntentType::Task, &[AgentKind::Code]),
+            Some(&TaskScope::OneOff),
+        );
+        assert_eq!(s, "Agent L → Code (one-off)");
+    }
+
+    #[test]
+    fn route_code_with_project_scope() {
+        let s = format_route_decision(
+            &plan(IntentType::Task, &[AgentKind::Code]),
+            Some(&TaskScope::Project),
+        );
+        assert_eq!(s, "Agent L → Code (project)");
+    }
+
+    #[test]
+    fn route_code_without_scope_shows_plain_code() {
+        let s = format_route_decision(
+            &plan(IntentType::Task, &[AgentKind::Code]),
+            None,
+        );
+        assert_eq!(s, "Agent L → Code");
     }
 
     #[test]
@@ -357,5 +442,88 @@ mod tests {
     #[test]
     fn test_spinner_has_10_frames() {
         assert_eq!(SPINNER.len(), 10);
+    }
+
+    // ── Fenced code block rendering ──────────────────────────────────────────
+
+    /// A fenced code block with a language tag should produce:
+    /// - one label line mentioning the language
+    /// - one line per code line, styled differently from prose
+    /// - one closing line
+    #[test]
+    fn code_block_with_language_produces_label_and_code_lines() {
+        let text = "```rust\nlet x = 1;\n```";
+        let lines = parse_simple_markdown(text);
+        // 3 lines: label, code line, closing line
+        assert_eq!(lines.len(), 3, "expected label + 1 code line + closing, got {lines:?}");
+        // Label line mentions the language
+        let label = lines[0].spans[0].content.to_string();
+        assert!(label.contains("rust"), "label should mention language: {label:?}");
+        // Code line has distinct styling (not the default white)
+        assert_ne!(lines[1].spans[0].style, Style::default(), "code line should be styled");
+        // Code line content is preserved exactly
+        assert_eq!(lines[1].spans[0].content, "let x = 1;");
+    }
+
+    /// A fenced code block without a language tag should still render distinctly.
+    #[test]
+    fn code_block_without_language_produces_generic_label() {
+        let text = "```\nhello\n```";
+        let lines = parse_simple_markdown(text);
+        assert_eq!(lines.len(), 3);
+        let label = lines[0].spans[0].content.to_string();
+        // Should still produce some kind of label, just without a language name
+        assert!(!label.is_empty());
+    }
+
+    /// Prose before and after a code block should still render normally.
+    #[test]
+    fn prose_around_code_block_renders_correctly() {
+        let text = "before\n```sh\necho hi\n```\nafter";
+        let lines = parse_simple_markdown(text);
+        // 5 lines: "before", label, "echo hi", closing, "after"
+        assert_eq!(lines.len(), 5, "got {lines:?}");
+        assert_eq!(lines[0].spans[0].content, "before");
+        assert_eq!(lines[4].spans[0].content, "after");
+    }
+
+    /// Bold markers inside a code block should NOT be processed as markdown —
+    /// the raw content should be preserved.
+    #[test]
+    fn bold_markers_inside_code_block_are_not_processed() {
+        let text = "```\nthis **is** raw\n```";
+        let lines = parse_simple_markdown(text);
+        // label line + 1 code line + closing line
+        assert_eq!(lines.len(), 3);
+        // The code line should be a single raw span, not split on "**"
+        assert_eq!(lines[1].spans.len(), 1, "code line should not parse bold markers");
+        assert_eq!(lines[1].spans[0].content, "this **is** raw");
+    }
+
+    /// A code block that is never closed should still render — the whole
+    /// remaining text is treated as code.
+    #[test]
+    fn unclosed_code_block_renders_without_panic() {
+        let text = "```rust\nlet x = 1;";
+        let lines = parse_simple_markdown(text);
+        // label line + 1 code line (no closing — shouldn't panic)
+        assert!(lines.len() >= 2, "expected at least label + code line");
+    }
+
+    /// Multiple code blocks in one message should each render correctly.
+    #[test]
+    fn multiple_code_blocks_both_render() {
+        let text = "```py\nprint(1)\n```\nmiddle\n```js\nconsole.log(2)\n```";
+        let lines = parse_simple_markdown(text);
+        let combined: String = lines.iter()
+            .flat_map(|l| l.spans.iter())
+            .map(|s| s.content.to_string())
+            .collect::<Vec<_>>()
+            .join(" ");
+        assert!(combined.contains("py"), "first block language missing");
+        assert!(combined.contains("print(1)"), "first block content missing");
+        assert!(combined.contains("middle"), "prose between blocks missing");
+        assert!(combined.contains("js"), "second block language missing");
+        assert!(combined.contains("console.log(2)"), "second block content missing");
     }
 }

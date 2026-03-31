@@ -37,7 +37,8 @@ impl Compressor {
         }
     }
 
-    /// Create a compressor with custom parameters (useful in tests).
+    /// Create a compressor with custom parameters. Used in unit tests only.
+    #[cfg(test)]
     pub fn with_params(threshold: usize, turns_to_compress: usize) -> Self {
         Self { threshold, turns_to_compress }
     }
