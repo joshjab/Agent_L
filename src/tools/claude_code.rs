@@ -107,7 +107,8 @@ impl ClaudeCodeInvoker {
 
     /// Run the claude CLI and stream each line of stdout as an
     /// [`AppEvent::Token`]. Returns `Err` on spawn failure, non-zero exit, or
-    /// timeout.
+    /// timeout. Used by the Project path once M8 permission relay is in place.
+    #[allow(dead_code)]
     pub async fn run_streaming(
         &self,
         prompt: &str,

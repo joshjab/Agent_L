@@ -111,6 +111,52 @@ impl Agent for ScopeDetector {
     }
 }
 
+/// Quick keyword-based scope classifier that runs before the Ollama call.
+///
+/// Returns `Some(scope)` when the task has clear signals, or `None` to fall
+/// through to Ollama classification.
+///
+/// - Project signals: references to specific file paths (`src/`, `.rs`, etc.)
+///   or phrases like "in the project / codebase / repo".
+/// - One-off signals: explicit requests to write/create a new standalone script
+///   or function with no file-path reference.
+fn classify_scope_from_keywords(task: &str) -> Option<TaskScope> {
+    let lower = task.to_lowercase();
+
+    let project_signals: &[&str] = &[
+        "src/", "tests/", ".rs", ".toml", ".md", ".json", ".yaml", ".yml",
+        "in this project", "in the project", "in the codebase", "in the repo",
+        "this file", "that file",
+    ];
+    if project_signals.iter().any(|s| lower.contains(s)) {
+        return Some(TaskScope::Project);
+    }
+
+    let one_off_signals: &[&str] = &[
+        "write a script", "write a bash", "write a python", "write a program",
+        "create a script", "generate a script", "make a script",
+        "write a function that", "write a function to",
+        "create a function", "make a function",
+    ];
+    if one_off_signals.iter().any(|s| lower.contains(s)) {
+        return Some(TaskScope::OneOff);
+    }
+
+    None
+}
+
+/// Message shown to the user when a project-scope task is detected.
+/// Direct file editing is not yet supported — the permission relay (M8) is
+/// needed before we can safely let Claude modify project files.
+const PROJECT_LIMITATION_MSG: &str = "\
+This looks like a task that requires editing existing project files directly. \
+Direct file editing is not supported yet — the Code specialist currently runs \
+one-off scripts in a temporary sandbox only.\n\n\
+To use it now, try rephrasing as a standalone script. For example:\n\
+  \"Write a script that reads src/agents/orchestrator.rs and prints the system prompt\"\n\
+  \"Write a Python script that searches .rs files for a pattern and prints matches\"\n\n\
+Full project editing will be available once the permission relay is implemented (M8).";
+
 /// Executes a code task by delegating to the `claude` CLI.
 ///
 /// First classifies the task scope via Ollama, then:
@@ -123,7 +169,9 @@ pub struct CodeSpecialist {
     pub model: String,
     /// Ollama base URL used for scope classification.
     pub chat_url: String,
-    /// Working directory for `Project`-scoped tasks.
+    /// Working directory for `Project`-scoped tasks (used once M8 permission
+    /// relay enables direct file editing).
+    #[allow(dead_code)]
     pub working_dir: PathBuf,
     /// The invoker used to run the `claude` CLI.
     pub invoker: ClaudeCodeInvoker,
@@ -153,22 +201,27 @@ impl CodeSpecialist {
         task: &str,
         tx: mpsc::UnboundedSender<AppEvent>,
     ) -> Result<String, String> {
-        // Step 1: classify the task scope via Ollama.
-        let detector = ScopeDetector::new(&self.model);
-        let context = vec![json!({ "role": "user", "content": task })];
-        let chat_url = self.chat_url.clone();
+        // Step 1: classify the task scope.
+        // Try the keyword heuristic first; fall back to Ollama if ambiguous.
+        let scope = if let Some(s) = classify_scope_from_keywords(task) {
+            s
+        } else {
+            let detector = ScopeDetector::new(&self.model);
+            let context = vec![json!({ "role": "user", "content": task })];
+            let chat_url = self.chat_url.clone();
 
-        let scope = crate::agents::call_with_retry(
-            &detector,
-            &context,
-            |req| {
-                let url = chat_url.clone();
-                async move { crate::ollama::post_json(&url, req).await }
-            },
-            3,
-        )
-        .await
-        .map_err(|e| format!("scope detection failed: {e}"))?;
+            crate::agents::call_with_retry(
+                &detector,
+                &context,
+                |req| {
+                    let url = chat_url.clone();
+                    async move { crate::ollama::post_json(&url, req).await }
+                },
+                3,
+            )
+            .await
+            .map_err(|e| format!("scope detection failed: {e}"))?
+        };
 
         // Notify the UI which scope was detected before executing.
         let _ = tx.send(AppEvent::ScopeDecision(scope.clone()));
@@ -187,11 +240,9 @@ impl CodeSpecialist {
                 Ok(output)
             }
             TaskScope::Project => {
-                // Run in the project working directory and stream output.
-                self.invoker
-                    .run_streaming(task, &self.working_dir, tx)
-                    .await
-                    .map_err(|e| e.message)?;
+                // Direct file editing is not yet supported — the permission
+                // relay (M8) is needed first. Send a helpful message instead.
+                let _ = tx.send(AppEvent::Token(PROJECT_LIMITATION_MSG.to_string()));
                 Ok(String::new())
             }
         }
@@ -407,8 +458,8 @@ mod tests {
         s
     }
 
-    /// `sh -c` specialist — lets us write the prompt as a shell command, so
-    /// we can test streaming ("printf 'a\nb\n'") or failure ("exit 1").
+    /// `sh -c` specialist — used once M8 enables the project streaming path.
+    #[allow(dead_code)]
     fn sh_specialist(chat_url: &str) -> CodeSpecialist {
         let mut s = CodeSpecialist::new("test-model", chat_url, std::env::temp_dir());
         s.invoker = ClaudeCodeInvoker::with_command("sh", vec!["-c".into()]);
@@ -471,9 +522,9 @@ mod tests {
 
     // ── project path ─────────────────────────────────────────────────────────
 
-    /// Ollama says project → output is streamed as Token events.
+    /// Ollama says project → specialist sends a limitation message, not subprocess output.
     #[tokio::test]
-    async fn project_streams_tokens() {
+    async fn project_sends_limitation_message_not_subprocess_output() {
         let server = MockServer::start().await;
         Mock::given(method("POST"))
             .and(path("/api/chat"))
@@ -484,40 +535,21 @@ mod tests {
             .await;
 
         let url = format!("{}/api/chat", server.uri());
-        let specialist = sh_specialist(&url);
-        let (tx, mut rx) = mpsc::unbounded_channel();
-        specialist
-            .run("printf 'alpha\\nbeta\\n'", tx)
-            .await
-            .unwrap();
+        // Bad binary — subprocess must not be called.
+        let mut s = CodeSpecialist::new("test-model", &url, std::env::temp_dir());
+        s.invoker = ClaudeCodeInvoker::with_command("/nonexistent/binary", vec![]);
 
-        let tokens: Vec<String> = std::iter::from_fn(|| rx.try_recv().ok())
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let result = s.run("some project task", tx).await.unwrap();
+
+        assert_eq!(result, "", "project path returns empty string");
+        let tokens: String = std::iter::from_fn(|| rx.try_recv().ok())
             .filter_map(|e| if let AppEvent::Token(t) = e { Some(t) } else { None })
             .collect();
-
-        assert!(!tokens.is_empty(), "expected token events for project scope");
-        let combined = tokens.join("");
-        assert!(combined.contains("alpha"), "got: {combined:?}");
-        assert!(combined.contains("beta"), "got: {combined:?}");
-    }
-
-    /// Project scope returns an empty String (output went via Token events).
-    #[tokio::test]
-    async fn project_returns_empty_string() {
-        let server = MockServer::start().await;
-        Mock::given(method("POST"))
-            .and(path("/api/chat"))
-            .respond_with(
-                ResponseTemplate::new(200).set_body_string(scope_response("project")),
-            )
-            .mount(&server)
-            .await;
-
-        let url = format!("{}/api/chat", server.uri());
-        let specialist = sh_specialist(&url);
-        let (tx, _rx) = mpsc::unbounded_channel();
-        let result = specialist.run("echo hello", tx).await.unwrap();
-        assert_eq!(result, "", "project path should return empty string");
+        assert!(
+            tokens.contains("not supported") || tokens.contains("limitation"),
+            "expected limitation message, got: {tokens:?}"
+        );
     }
 
     // ── sad paths ────────────────────────────────────────────────────────────
@@ -533,8 +565,106 @@ mod tests {
         let url = format!("http://127.0.0.1:{port}/api/chat");
         let specialist = echo_specialist(&url);
         let (tx, _rx) = mpsc::unbounded_channel();
-        let result = specialist.run("write a script", tx).await;
+        // Use an ambiguous task so the heuristic returns None and Ollama is called.
+        let result = specialist.run("do something useful", tx).await;
         assert!(result.is_err(), "should fail when Ollama is unreachable");
+    }
+
+    // ── keyword heuristic ────────────────────────────────────────────────────
+
+    /// A task mentioning a src/ file path should be detected as Project without
+    /// needing an Ollama call.
+    #[test]
+    fn heuristic_file_path_is_project() {
+        assert_eq!(
+            classify_scope_from_keywords("add a comment to src/agents/orchestrator.rs"),
+            Some(TaskScope::Project)
+        );
+    }
+
+    /// A task asking to "write a script" with no file-path reference is OneOff.
+    #[test]
+    fn heuristic_write_script_is_one_off() {
+        assert_eq!(
+            classify_scope_from_keywords("write a bash script that counts lines"),
+            Some(TaskScope::OneOff)
+        );
+    }
+
+    /// An ambiguous task (no strong signals) should return None so Ollama decides.
+    #[test]
+    fn heuristic_ambiguous_returns_none() {
+        assert_eq!(classify_scope_from_keywords("explain recursion"), None);
+    }
+
+    /// A task referencing a .toml file is Project.
+    #[test]
+    fn heuristic_toml_file_is_project() {
+        assert_eq!(
+            classify_scope_from_keywords("add tempfile to Cargo.toml"),
+            Some(TaskScope::Project)
+        );
+    }
+
+    // ── project limitation message ───────────────────────────────────────────
+
+    /// When scope is Project the specialist sends a limitation message as a
+    /// Token event (no subprocess is spawned).
+    #[tokio::test]
+    async fn project_scope_sends_limitation_message() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/api/chat"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_string(scope_response("project")),
+            )
+            .mount(&server)
+            .await;
+
+        let url = format!("{}/api/chat", server.uri());
+        // Use a bad binary — if the subprocess were called it would error.
+        let mut s = CodeSpecialist::new("test-model", &url, std::env::temp_dir());
+        s.invoker = ClaudeCodeInvoker::with_command("/nonexistent/binary", vec![]);
+
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let result = s.run("modify src/main.rs", tx).await;
+
+        // Should succeed (returns Ok) even though subprocess binary is bad.
+        assert!(result.is_ok(), "project path should not invoke the binary");
+
+        let tokens: Vec<String> = std::iter::from_fn(|| rx.try_recv().ok())
+            .filter_map(|e| if let AppEvent::Token(t) = e { Some(t) } else { None })
+            .collect();
+        let combined = tokens.join("");
+        assert!(
+            combined.contains("not supported") || combined.contains("limitation"),
+            "expected a limitation message, got: {combined:?}"
+        );
+    }
+
+    /// Project scope detected via keyword heuristic also sends a limitation
+    /// message and does not call the subprocess.
+    #[tokio::test]
+    async fn project_scope_via_heuristic_sends_limitation_message() {
+        // No mock server needed — heuristic should short-circuit before Ollama.
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        drop(listener);
+
+        let url = format!("http://127.0.0.1:{port}/api/chat");
+        let mut s = CodeSpecialist::new("test-model", &url, std::env::temp_dir());
+        s.invoker = ClaudeCodeInvoker::with_command("/nonexistent/binary", vec![]);
+
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        // This task has "src/" in it — heuristic should classify as Project
+        // without hitting Ollama (which isn't running on the dead port).
+        let result = s.run("add a comment to src/config.rs", tx).await;
+
+        assert!(result.is_ok(), "should succeed via heuristic, not Ollama");
+        let tokens: Vec<String> = std::iter::from_fn(|| rx.try_recv().ok())
+            .filter_map(|e| if let AppEvent::Token(t) = e { Some(t) } else { None })
+            .collect();
+        assert!(!tokens.is_empty(), "should have sent a limitation message");
     }
 
     /// If the claude invocation fails (binary exits non-zero), run() returns Err.
