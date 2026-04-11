@@ -29,7 +29,7 @@ impl ChatSpecialist {
     /// Returns the full accumulated response text (for use by downstream steps).
     pub async fn run(
         &self,
-        _task: &str,
+        task: &str,
         messages: &[Value],
         context: Option<&str>,
         model: &str,
@@ -40,6 +40,11 @@ impl ChatSpecialist {
         let mut msgs: Vec<Value> = messages.to_vec();
         if let Some(ctx) = context {
             msgs.push(json!({"role": "user", "content": ctx}));
+        }
+        // When called with no conversation history (e.g. direct pipeline invocations),
+        // use the task as the user message so the model has a prompt to respond to.
+        if msgs.is_empty() && !task.is_empty() {
+            msgs.push(json!({"role": "user", "content": task}));
         }
 
         // Use a capture channel so we can accumulate tokens while forwarding

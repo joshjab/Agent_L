@@ -23,6 +23,43 @@ fn live_config() -> Config {
     Config::from_env()
 }
 
+/// Drain all events from `rx` and split them into token text and the names of
+/// every tool that was actually executed (via `AppEvent::ToolCall`).
+fn collect_events(rx: &mut mpsc::UnboundedReceiver<AppEvent>) -> (String, Vec<String>) {
+    let mut tokens = String::new();
+    let mut tool_calls: Vec<String> = Vec::new();
+    while let Ok(event) = rx.try_recv() {
+        match event {
+            AppEvent::Token(t) => tokens.push_str(&t),
+            AppEvent::ToolCall { name, .. } => tool_calls.push(name),
+            _ => {}
+        }
+    }
+    (tokens, tool_calls)
+}
+
+/// Returns `true` if any run of `min_len` consecutive characters from `text`
+/// appears a second time anywhere later in the same string (case-insensitive).
+/// Used to detect repeated phrases such as "According to my search results".
+fn has_repeated_phrase(text: &str, min_len: usize) -> bool {
+    let lower = text.to_lowercase();
+    let len = lower.len();
+    if len < min_len * 2 {
+        return false;
+    }
+    // Only start windows on word boundaries to avoid partial-word false positives.
+    for start in 0..len.saturating_sub(min_len) {
+        if start > 0 && lower.as_bytes()[start - 1] != b' ' {
+            continue;
+        }
+        let window = &lower[start..start + min_len];
+        if lower[start + min_len..].contains(window) {
+            return true;
+        }
+    }
+    false
+}
+
 fn chat_url(cfg: &Config) -> String {
     format!("{}/api/chat", cfg.base_url)
 }
@@ -79,7 +116,7 @@ async fn live_conversational_produces_response() {
 // ─── Search specialist ───────────────────────────────────────────────────────
 
 /// Factual queries must route to Search and return a sensible answer.
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 #[ignore]
 async fn live_factual_returns_cited_answer() {
     let cfg = live_config();
@@ -104,16 +141,12 @@ async fn live_factual_returns_cited_answer() {
     .await
     .expect("live factual query should succeed");
 
-    let tokens: String = std::iter::from_fn(|| rx.try_recv().ok())
-        .filter_map(|e| {
-            if let AppEvent::Token(t) = e {
-                Some(t)
-            } else {
-                None
-            }
-        })
-        .collect();
+    let (tokens, tool_calls) = collect_events(&mut rx);
 
+    assert!(
+        tool_calls.iter().any(|n| n == "web_search"),
+        "Search specialist must call web_search before answering, tool_calls: {tool_calls:?}"
+    );
     assert!(
         tokens.to_lowercase().contains("france"),
         "Factual answer should mention France, got: {tokens:?}"
@@ -121,7 +154,7 @@ async fn live_factual_returns_cited_answer() {
 }
 
 /// Search answer must not contain the same sentence twice (regression for M7 dedup bug).
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 #[ignore]
 async fn live_search_does_not_duplicate_sentences() {
     let cfg = live_config();
@@ -146,29 +179,18 @@ async fn live_search_does_not_duplicate_sentences() {
     .await
     .expect("live search should succeed");
 
-    let tokens: String = std::iter::from_fn(|| rx.try_recv().ok())
-        .filter_map(|e| {
-            if let AppEvent::Token(t) = e {
-                Some(t)
-            } else {
-                None
-            }
-        })
-        .collect();
+    let (tokens, tool_calls) = collect_events(&mut rx);
 
-    // Check that no sentence appears more than once (case-insensitive, split on ". ")
-    let sentences: Vec<&str> = tokens.split(". ").map(str::trim).collect();
-    let unique: std::collections::HashSet<String> = sentences
-        .iter()
-        .map(|s| s.to_lowercase())
-        .filter(|s| !s.is_empty())
-        .collect();
-    let non_empty_count = sentences.iter().filter(|s| !s.is_empty()).count();
-
-    assert_eq!(
-        non_empty_count,
-        unique.len(),
-        "Search answer should not contain duplicate sentences, got: {tokens:?}"
+    assert!(
+        tool_calls.iter().any(|n| n == "web_search"),
+        "Search specialist must call web_search before answering, tool_calls: {tool_calls:?}"
+    );
+    // A repeated run of 30+ chars means the model echoed the same phrase twice
+    // (e.g. "According to my search results" appearing back-to-back).
+    // This catches repetition regardless of whether sentences end with ". " or ".".
+    assert!(
+        !has_repeated_phrase(&tokens, 30),
+        "Search answer should not contain repeated phrases, got: {tokens:?}"
     );
 }
 
@@ -339,7 +361,7 @@ async fn live_creative_routes_to_chat_not_factual() {
 
 /// Search specialist response must include at least one URL — the model should
 /// never answer a factual question from its own knowledge without a citation.
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 #[ignore]
 async fn live_search_response_includes_url() {
     let cfg = live_config();
@@ -364,25 +386,28 @@ async fn live_search_response_includes_url() {
     .await
     .expect("live search should succeed");
 
-    let tokens: String = std::iter::from_fn(|| rx.try_recv().ok())
-        .filter_map(|e| {
-            if let AppEvent::Token(t) = e {
-                Some(t)
-            } else {
-                None
-            }
-        })
-        .collect();
+    let (tokens, tool_calls) = collect_events(&mut rx);
 
+    // Tool must have actually executed — not just claimed to.
+    assert!(
+        tool_calls.iter().any(|n| n == "web_search"),
+        "Search specialist must call web_search, tool_calls: {tool_calls:?}"
+    );
+    // Response must contain a URL that came from the search observation.
     assert!(
         tokens.contains("http://") || tokens.contains("https://"),
         "Search response should contain at least one URL, got: {tokens:?}"
+    );
+    // Response must not be a repeated fabrication.
+    assert!(
+        !has_repeated_phrase(&tokens, 30),
+        "Search response should not contain repeated phrases, got: {tokens:?}"
     );
 }
 
 /// Local search must return file-path snippets from the project rather than
 /// a fabricated answer — the model must call `local_search` and report results.
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 #[ignore]
 async fn live_local_search_returns_file_paths() {
     let cfg = live_config();
@@ -408,19 +433,22 @@ async fn live_local_search_returns_file_paths() {
     .await
     .expect("live local search should succeed");
 
-    let tokens: String = std::iter::from_fn(|| rx.try_recv().ok())
-        .filter_map(|e| {
-            if let AppEvent::Token(t) = e {
-                Some(t)
-            } else {
-                None
-            }
-        })
-        .collect();
+    let (tokens, tool_calls) = collect_events(&mut rx);
 
+    // local_search must have actually run grep — not fabricated an answer.
+    assert!(
+        tool_calls.iter().any(|n| n == "local_search"),
+        "Search specialist must call local_search for a file-search query, tool_calls: {tool_calls:?}"
+    );
+    // Response must cite actual file paths from the grep observation.
     assert!(
         tokens.contains(".rs") || tokens.contains("src/"),
         "Local search response should reference .rs file paths, got: {tokens:?}"
+    );
+    // Response must not be a repeated fabrication.
+    assert!(
+        !has_repeated_phrase(&tokens, 30),
+        "Local search response should not contain repeated phrases, got: {tokens:?}"
     );
 }
 

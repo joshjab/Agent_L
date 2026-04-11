@@ -9,33 +9,94 @@ use crate::tools::Tool;
 use crate::tools::executor::{MAX_STEPS, execute_react_loop};
 use crate::tools::search_tools::{LocalSearchTool, WebSearchTool};
 
-/// Build the search specialist system prompt, injecting today's approximate year
-/// so the model can flag stale results. No external dependency needed — a one-year
-/// approximation (secs/31_557_600) is accurate enough for prompt context.
-fn search_system_prompt() -> String {
+fn is_leap(y: u64) -> bool {
+    y.is_multiple_of(400) || (y.is_multiple_of(4) && !y.is_multiple_of(100))
+}
+
+/// Compute current UTC date and time from the UNIX timestamp.
+/// No external crate needed — standard calendar arithmetic.
+fn utc_now() -> String {
     use std::time::{SystemTime, UNIX_EPOCH};
-    let year = 1970u64
-        + SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map(|d| d.as_secs() / 31_557_600) // seconds per Julian year
-            .unwrap_or(55);
+    let secs = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let hour = (secs % 86400) / 3600;
+    let minute = (secs % 3600) / 60;
+    let mut days = secs / 86400;
+    let mut year = 1970u64;
+    loop {
+        let diy = if is_leap(year) { 366 } else { 365 };
+        if days < diy {
+            break;
+        }
+        days -= diy;
+        year += 1;
+    }
+    let leap = is_leap(year);
+    let months = [
+        31u64,
+        if leap { 29 } else { 28 },
+        31,
+        30,
+        31,
+        30,
+        31,
+        31,
+        30,
+        31,
+        30,
+        31,
+    ];
+    let mut month = 1u64;
+    for &dim in &months {
+        if days < dim {
+            break;
+        }
+        days -= dim;
+        month += 1;
+    }
+    format!("{year}-{month:02}-{} {hour:02}:{minute:02} UTC", days + 1)
+}
+
+/// Build the search specialist system prompt, injecting the current UTC datetime
+/// so the model can answer time/date queries accurately and flag stale sources.
+fn search_system_prompt() -> String {
+    let now = utc_now();
     format!(
         "You are a search specialist. Find accurate, factual information using the \
 tools available to you.\n\
 \n\
-Today's date is approximately {year}. If a source looks outdated relative to today, \
+Current date and time (UTC): {now}. If a source looks outdated relative to today, \
 note that in your answer.\n\
 \n\
+AVAILABLE TOOLS (you MUST use one before answering):\n\
+- web_search {{\"query\": \"...\"}} — search the web with DuckDuckGo\n\
+- local_search {{\"query\": \"...\", \"path\": \".\"}} — grep local project files\n\
+\n\
 RULES:\n\
-- You MUST call at least one tool (web_search or local_search) before giving \
-a FinalAnswer. Never answer from your own knowledge alone.\n\
-- Use the ReAct format exactly — one action per line:\n\
+- You MUST call at least one tool before giving a FinalAnswer. NEVER answer from \
+your own knowledge alone — even if you think you know the answer.\n\
+- After receiving an Observation, your NEXT output MUST be a FinalAnswer — do NOT \
+call another tool or add more Thoughts.\n\
+- Use the ReAct format — one action per line:\n\
   Thought: <your reasoning>\n\
   ToolCall: <tool_name> {{\"arg\": \"value\"}}\n\
   FinalAnswer: <your answer with source URL or file path>\n\
 \n\
-After receiving an Observation, synthesize it into a clear answer that \
-includes the source URL or file path as a citation."
+EXAMPLE (web search):\n\
+Thought: I need to find the latest Rust version.\n\
+ToolCall: web_search {{\"query\": \"latest stable Rust version\"}}\n\
+[Observation returned]\n\
+FinalAnswer: Rust 1.XX was released on DATE. Source: https://...\n\
+\n\
+EXAMPLE (local file search):\n\
+Thought: I need to find fn main in project files.\n\
+ToolCall: local_search {{\"query\": \"fn main\", \"path\": \".\"}}\n\
+[Observation returned]\n\
+FinalAnswer: Found fn main in src/main.rs:10 and src/lib.rs:5.\n\
+\n\
+Always include file paths or URLs from the Observation in your FinalAnswer."
     )
 }
 
@@ -129,6 +190,7 @@ impl SearchSpecialist {
                     Ok(content)
                 }
             },
+            Some(tx.clone()),
             MAX_STEPS,
         )
         .await

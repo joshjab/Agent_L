@@ -1,12 +1,10 @@
-// ReAct loop infrastructure for M7 (Search) and M8 (Shell) specialists.
-// Nothing calls this yet — suppressed until those milestones are implemented.
-#![allow(dead_code)]
-
 use std::collections::HashMap;
 
 use serde_json::{Value, json};
+use tokio::sync::mpsc;
 
 use super::Tool;
+use crate::app::AppEvent;
 
 /// Maximum number of ReAct steps before the executor hard-stops with an error.
 pub const MAX_STEPS: usize = 10;
@@ -101,6 +99,7 @@ pub async fn execute_react_loop<F, Fut>(
     initial_messages: Vec<Value>,
     tools: &HashMap<&str, &dyn Tool>,
     prompt_fn: F,
+    event_tx: Option<mpsc::UnboundedSender<AppEvent>>,
     max_steps: usize,
 ) -> Result<String, ExecutorError>
 where
@@ -131,14 +130,35 @@ where
                     break;
                 }
                 Some(ReActStep::ToolCall { name, args }) => {
+                    // Notify observers that a tool is about to execute.
+                    if let Some(tx) = &event_tx {
+                        let _ = tx.send(AppEvent::ToolCall {
+                            name: name.clone(),
+                            args: args.clone(),
+                        });
+                    }
+
                     let obs = match tools.get(name.as_str()) {
                         Some(tool) => match validate_args(&tool.schema(), &args) {
                             Ok(()) => match tool.execute(&args) {
                                 Ok(result) => {
+                                    // Notify observers of the tool result.
+                                    if let Some(tx) = &event_tx {
+                                        let _ = tx.send(AppEvent::ToolResult {
+                                            name: name.clone(),
+                                            result: result.clone(),
+                                        });
+                                    }
                                     let enriched = build_observation(0, &result);
                                     format!("Observation: {enriched}")
                                 }
                                 Err(e) => {
+                                    if let Some(tx) = &event_tx {
+                                        let _ = tx.send(AppEvent::ToolResult {
+                                            name: name.clone(),
+                                            result: e.clone(),
+                                        });
+                                    }
                                     let enriched = build_observation(1, &e);
                                     format!("Observation: {enriched}")
                                 }
@@ -160,8 +180,18 @@ where
         }
 
         // Append all tool observations as user messages for the next iteration.
+        // The FinalAnswer reminder is injected into each observation so the model
+        // sees it immediately before its next turn — the system-prompt instruction
+        // alone is often ignored by smaller models after a tool result.
         for obs in observations {
-            messages.push(json!({"role": "user", "content": obs}));
+            let content = format!(
+                "{obs}\n\n\
+                 You now have the Observation above. \
+                 Your next output MUST be exactly:\n\
+                 FinalAnswer: <your complete answer>\n\
+                 Do NOT call any more tools."
+            );
+            messages.push(json!({"role": "user", "content": content}));
         }
     }
 
@@ -337,6 +367,7 @@ mod tests {
             vec![json!({"role": "user", "content": "hello"})],
             &tools,
             |_msgs| async { Ok::<String, Box<dyn std::error::Error>>("FinalAnswer: done".into()) },
+            None,
             MAX_STEPS,
         )
         .await
@@ -369,6 +400,7 @@ mod tests {
                     }
                 }
             },
+            None,
             MAX_STEPS,
         )
         .await
@@ -404,6 +436,7 @@ mod tests {
                     }
                 }
             },
+            None,
             MAX_STEPS,
         )
         .await
@@ -465,6 +498,7 @@ mod tests {
                     }
                 }
             },
+            None,
             MAX_STEPS,
         )
         .await
@@ -483,6 +517,7 @@ mod tests {
             |_msgs| async {
                 Ok::<String, Box<dyn std::error::Error>>("Thought: still thinking...".into())
             },
+            None,
             3, // use a small limit for the test
         )
         .await
@@ -523,6 +558,7 @@ mod tests {
                     }
                 }
             },
+            None,
             MAX_STEPS,
         )
         .await

@@ -257,15 +257,9 @@ fn agent_kind_label(kind: &AgentKind) -> &'static str {
     }
 }
 
-/// Wrap a URL with OSC 8 terminal hyperlink escape sequences.
-///
-/// Terminals that support OSC 8 (iTerm2, Kitty, recent GNOME Terminal) will
-/// render this as a clickable link; others display the URL text as-is.
-fn osc8_link(url: &str) -> String {
-    format!("\x1b]8;;{url}\x1b\\{url}\x1b]8;;\x1b\\")
-}
-
-/// Split `text` into spans, wrapping any `https://` URLs with OSC 8 sequences.
+/// Split `text` into spans, styling any `https://` URLs as underlined cyan.
+/// Ratatui renders Span content as literal text, so raw OSC 8 escape sequences
+/// cannot be used — they would appear as garbage characters in the TUI.
 fn linkify_text(text: &str) -> Vec<Span<'static>> {
     let mut spans: Vec<Span<'static>> = Vec::new();
     let mut remaining = text;
@@ -279,7 +273,12 @@ fn linkify_text(text: &str) -> Vec<Span<'static>> {
         let end = url_str
             .find(|c: char| c.is_whitespace() || matches!(c, ')' | ']' | '"' | '\'' | ',' | ';'))
             .unwrap_or(url_str.len());
-        spans.push(Span::raw(osc8_link(&url_str[..end])));
+        spans.push(Span::styled(
+            url_str[..end].to_string(),
+            Style::default()
+                .add_modifier(Modifier::UNDERLINED)
+                .fg(Color::Cyan),
+        ));
         remaining = &url_str[end..];
     }
 
@@ -652,27 +651,32 @@ mod tests {
         );
     }
 
-    // ── OSC 8 hyperlink linkification ────────────────────────────────────────
+    // ── URL linkification ────────────────────────────────────────────────────
 
-    /// A bare `https://` URL in prose should be wrapped with OSC 8 sequences so
-    /// terminals that support clickable links can render them.
+    /// A bare `https://` URL in prose should be rendered as underlined cyan.
     #[test]
-    fn bare_url_gets_osc8_linkified() {
+    fn bare_url_gets_linkified() {
         let lines = parse_simple_markdown("Visit https://example.com for more info");
-        let all_content: String = lines[0]
+        let url_span = lines[0]
             .spans
             .iter()
-            .map(|s| s.content.as_ref())
-            .collect::<String>();
+            .find(|s| s.content.contains("https://example.com"))
+            .expect("URL span missing");
         assert!(
-            all_content.contains("\x1b]8;;https://example.com\x1b\\"),
-            "URL should be wrapped with OSC 8 open sequence, got: {all_content:?}"
+            url_span.style.add_modifier.contains(Modifier::UNDERLINED),
+            "URL span should be underlined"
         );
+        assert_eq!(
+            url_span.style.fg,
+            Some(Color::Cyan),
+            "URL span should be cyan"
+        );
+        // No raw escape sequences — ratatui would render them as garbage
         assert!(
-            all_content.contains("\x1b]8;;\x1b\\"),
-            "URL should be wrapped with OSC 8 close sequence"
+            !url_span.content.contains('\x1b'),
+            "no escape sequences in URL span"
         );
-        // The non-URL text should also be present
+        let all_content: String = lines[0].spans.iter().map(|s| s.content.as_ref()).collect();
         assert!(all_content.contains("Visit "));
         assert!(all_content.contains(" for more info"));
     }
@@ -686,7 +690,10 @@ mod tests {
             .iter()
             .map(|s| s.content.as_ref())
             .collect::<String>();
-        assert!(!all_content.contains("\x1b]8;"), "no OSC 8 in plain text");
+        assert!(
+            !all_content.contains('\x1b'),
+            "no escape sequences in plain text"
+        );
         assert_eq!(all_content, "No URLs here, just text.");
     }
 
@@ -699,9 +706,7 @@ mod tests {
             .iter()
             .map(|s| s.content.as_ref())
             .collect::<String>();
-        // The bold span contains the raw URL without OSC 8
         assert!(combined.contains("https://example.com"));
-        // Bold part should NOT be linkified
         let bold_spans: Vec<_> = lines[0]
             .spans
             .iter()
@@ -718,14 +723,14 @@ mod tests {
     #[test]
     fn url_at_end_of_line_linkified() {
         let lines = parse_simple_markdown("Source: https://en.wikipedia.org/wiki/France");
-        let all_content: String = lines[0]
+        let url_span = lines[0]
             .spans
             .iter()
-            .map(|s| s.content.as_ref())
-            .collect::<String>();
+            .find(|s| s.content.contains("https://en.wikipedia.org/wiki/France"))
+            .expect("URL span missing");
         assert!(
-            all_content.contains("\x1b]8;;https://en.wikipedia.org/wiki/France\x1b\\"),
-            "URL at end of line should be linkified, got: {all_content:?}"
+            url_span.style.add_modifier.contains(Modifier::UNDERLINED),
+            "URL at end of line should be underlined"
         );
     }
 }

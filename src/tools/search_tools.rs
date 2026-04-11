@@ -23,6 +23,9 @@ struct DdgResponse {
     abstract_source: String,
     #[serde(rename = "RelatedTopics", default)]
     related_topics: Vec<DdgTopic>,
+    /// Actual web results (more current than AbstractText; absent for some queries).
+    #[serde(rename = "Results", default)]
+    results: Vec<DdgTopic>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -47,8 +50,26 @@ fn parse_ddg(json_str: &str) -> Vec<SearchResult> {
 
     let mut results = Vec::new();
 
-    // Only include abstract if it has a valid https:// URL — DDG occasionally
-    // returns malformed or non-https URLs (e.g. "tokio.ts") that should be skipped.
+    // `Results` contains actual live web hits — more current than AbstractText
+    // (which is Wikipedia-derived and can lag by weeks). Prefer these first.
+    for hit in resp.results.into_iter().take(3) {
+        if hit.text.is_empty() || !hit.first_url.starts_with("https://") {
+            continue;
+        }
+        results.push(SearchResult {
+            title: hit
+                .first_url
+                .split('/')
+                .next_back()
+                .unwrap_or("result")
+                .replace('_', " "),
+            url: hit.first_url,
+            snippet: hit.text,
+        });
+    }
+
+    // AbstractText is a Wikipedia-cached summary. Include it after live results
+    // so the model always has context, but live hits take precedence.
     if !resp.abstract_text.is_empty() && resp.abstract_url.starts_with("https://") {
         results.push(SearchResult {
             title: if resp.abstract_source.is_empty() {
@@ -259,6 +280,29 @@ mod tests {
         assert_eq!(results[0].title, "Wikipedia");
         assert!(results[0].snippet.contains("Paris"));
         assert!(results[0].url.contains("wikipedia"));
+    }
+
+    #[test]
+    fn parse_ddg_results_field_takes_priority_over_abstract() {
+        // When both Results and AbstractText are present, Results come first
+        // because they are live web hits rather than Wikipedia-cached data.
+        let json_str = r#"{
+            "AbstractText": "Joe Biden is the president.",
+            "AbstractURL": "https://en.wikipedia.org/wiki/Joe_Biden",
+            "AbstractSource": "Wikipedia",
+            "Results": [
+                {"Text": "Donald Trump is the 47th president.", "FirstURL": "https://www.whitehouse.gov/president"}
+            ],
+            "RelatedTopics": []
+        }"#;
+        let results = parse_ddg(json_str);
+        // Live result should appear before the abstract
+        assert_eq!(results[0].url, "https://www.whitehouse.gov/president");
+        assert!(
+            results[0].snippet.contains("Trump"),
+            "live result should appear first, got: {:?}",
+            results[0].snippet
+        );
     }
 
     #[test]

@@ -320,6 +320,102 @@ Re-run the M7 manual checks with the fixes applied:
 
 ---
 
+## M7.6 — Search Backend: Replace DDG with Tavily
+
+The DuckDuckGo Instant Answer API is a knowledge-graph lookup, not a web search. For queries
+about current events and real-world state ("Who is the current president?", "What is the latest
+Rust release?") it returns stale Wikipedia abstracts or empty results. The model fills the gap
+from training data, producing wrong answers with false confidence.
+
+This milestone replaces the DDG backend with [Tavily](https://tavily.com) — a search API designed
+for AI agents that returns actual live web results. DuckDuckGo is kept as a zero-config fallback
+when no API key is set. Full research and evaluation of alternatives is in
+[`doc/research/search-apis.md`](research/search-apis.md).
+
+**Why Tavily:**
+- 1,000 free credits/month, no credit card required — adequate for personal daily use (~33 queries/day)
+- Returns current web results (not Wikipedia cache)
+- Purpose-built for AI agents: structured output, relevance scores, optional `answer` field
+- Existing Rust crate (`tavily` on crates.io)
+- $0.008/credit ($8/1,000 queries) if the free tier is exceeded
+
+**Budget guard:** if `TAVILY_API_KEY` is set and the monthly free tier is exceeded, cost is
+roughly $4–8/month at typical personal-use volumes. Still cheaper than any paid tier.
+
+### Tasks
+
+- [ ] Add `TAVILY_API_KEY`, `BRAVE_API_KEY`, and `SEARCH_PROVIDER` env vars to `src/config.rs`.
+  Add a `SearchProvider` enum (`Tavily`, `Brave`, `DuckDuckGo`). Default: `DuckDuckGo` when no
+  key is set so the app still works without any configuration.
+- [ ] Create `src/tools/tavily_search.rs` — a `TavilySearchTool` that implements the `Tool` trait.
+  Calls `POST https://api.tavily.com/search` with `{"api_key", "query", "search_depth": "basic",
+  "max_results": 5}`. Formats the response as `Title | URL | Snippet` lines (same format as the
+  existing DDG output so the Search specialist's system prompt needs no changes). If the response
+  includes a non-empty `answer` field, prepend it as `Answer: <text>` so the model can cite it
+  directly. Use `reqwest::blocking` with `block_in_place` — same pattern as `WebSearchTool`.
+- [ ] Update `WebSearchTool::execute()` in `src/tools/search_tools.rs` to dispatch to the
+  configured backend: `TavilySearchTool` if `SEARCH_PROVIDER=tavily`, existing DDG path otherwise.
+  The tool name exposed to the Search specialist stays `web_search` regardless of backend — the
+  specialist should not need to know which API is in use.
+- [ ] (Optional, low priority) Create `src/tools/brave_search.rs` — a `BraveSearchTool` for
+  `SEARCH_PROVIDER=brave`. Calls `GET https://api.search.brave.com/res/v1/web/search?q={query}`
+  with `X-Subscription-Token` header. Parses `web.results[].{title, url, description}`. Wire it
+  into the `WebSearchTool` dispatcher the same way as Tavily. See
+  [`doc/research/search-apis.md`](research/search-apis.md) for Brave API details.
+- [ ] Write unit tests for `TavilySearchTool` using wiremock (same pattern as existing DDG tests):
+  - Happy path: mock returns 2 results → formatted output includes title, URL, snippet
+  - `answer` field present → prepended as `Answer:` line
+  - Empty results → `No results found.` placeholder
+  - HTTP error → returns `Err`
+  - Missing `api_key` env var → returns `Err` with a clear message
+- [ ] Update `live_factual_review.rs` tests (already in `tests/live/`) so they use Tavily when
+  `TAVILY_API_KEY` is set. The tests already assert `web_search` was called and a URL was cited;
+  also assert the answer is non-empty. The pre-commit hook already runs these with `--nocapture`
+  and asks for manual sign-off.
+- [ ] Add `.env.example` to the repo root (if it doesn't exist) with:
+  ```
+  TAVILY_API_KEY=tvly-your-key-here
+  # BRAVE_API_KEY=BSA-your-key-here
+  # SEARCH_PROVIDER=tavily   # tavily | brave | duckduckgo (default: duckduckgo)
+  ```
+- [ ] Update `doc/ARCHITECTURE.md` to note the search backend config and the three-provider
+  fallback chain (Tavily → Brave → DDG).
+
+> **New files:** `src/tools/tavily_search.rs`, optionally `src/tools/brave_search.rs`,
+> `.env.example`
+> **Changed:** `src/config.rs` (SearchProvider enum, new env vars), `src/tools/search_tools.rs`
+> (dispatch to configured backend), `doc/ARCHITECTURE.md`
+
+### Verification
+
+```bash
+cargo check && cargo clippy -- -D warnings && cargo test && cargo fmt --check
+```
+
+All existing tests must still pass (DDG path still works; new tests for Tavily added).
+
+```bash
+# Set your Tavily key first: export TAVILY_API_KEY=tvly-...
+cargo test --test live_factual_review -- --ignored --nocapture
+```
+
+Review the printed answers. Expected results with Tavily:
+- "Who is the current president of the United States?" → Donald Trump (with source URL)
+- "Who is the current Prime Minister of the United Kingdom?" → Keir Starmer (with source URL)
+- Routing test: both queries classified as `Factual`, routed to `Search`
+
+```bash
+cargo run
+```
+With Ollama running and `TAVILY_API_KEY` set:
+- `"who is the current president of the US?"` → correct answer with source URL
+- `"what's the latest stable version of Rust?"` → correct version with source URL
+- `"how are you today?"` → still routes to Chat, no regression
+- Unset `TAVILY_API_KEY` → app still works, falls back to DDG (stable facts still work, current
+  events may be stale — acceptable)
+
+---
+
 ## M8 — Specialist: Shell + Code Permission Relay
 
 The Shell specialist runs sandboxed commands on the user's machine. Because this is dangerous, it has an explicit confirmation gate — the UI must show the command and get user approval before execution.

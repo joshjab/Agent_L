@@ -45,8 +45,29 @@ if curl -sf --max-time 2 "http://${OLLAMA_HOST}:${OLLAMA_PORT}/api/tags" > /dev/
     "$CARGO" test --test live_pipeline -- --ignored \
         || fail "live_pipeline tests failed (run with --nocapture to debug)"
     ok "Live suite passed."
+
+    # ── 3. Factual review (manual sign-off required) ─────────────────────────
+    echo ""
+    echo "[pre-commit] Running factual review tests (read the output carefully)…"
+    "$CARGO" test --test live_factual_review -- --ignored --nocapture \
+        || fail "live_factual_review tests failed"
+
+    echo ""
+    if [ -t 0 ]; then
+        # Interactive terminal — ask the committer to sign off on the answers.
+        read -rp "[pre-commit] Review the factual answers above. Do they look correct? [y/N] " _confirm
+        if [[ "$_confirm" != "y" && "$_confirm" != "Y" ]]; then
+            fail "Factual review rejected — fix the answers before committing"
+        fi
+        ok "Factual review approved."
+    else
+        warn "Non-interactive — skipping factual review sign-off prompt."
+        warn "Run manually and verify answers before merging to main:"
+        warn "  cargo test --test live_factual_review -- --ignored --nocapture"
+    fi
 else
     warn "Ollama not reachable at ${OLLAMA_HOST}:${OLLAMA_PORT} — skipping live tests."
     warn "Start Ollama and run manually before merging to main:"
     warn "  cargo test --test live_pipeline -- --ignored --nocapture"
+    warn "  cargo test --test live_factual_review -- --ignored --nocapture"
 fi

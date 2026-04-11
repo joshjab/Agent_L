@@ -31,16 +31,20 @@ pub enum AppEvent {
     RouteDecision(TaskPlan),
     /// The Code specialist has determined whether the task is one-off or project.
     ScopeDecision(TaskScope),
-    /// A specialist is about to invoke a tool. (M10: trace panel)
-    #[allow(dead_code)]
+    /// A specialist is about to invoke a tool.
+    /// `name` is read in live tests; `args` and UI display deferred to M10.
     ToolCall {
+        #[allow(dead_code)]
         name: String,
+        #[allow(dead_code)]
         args: serde_json::Value,
     },
-    /// A tool has returned a result. (M10: trace panel)
-    #[allow(dead_code)]
+    /// A tool has returned a result.
+    /// Fields read in executor.rs and live tests; UI display deferred to M10.
     ToolResult {
+        #[allow(dead_code)]
         name: String,
+        #[allow(dead_code)]
         result: String,
     },
     /// Token-usage stats from one Ollama call (prompt tokens in, generated tokens out).
