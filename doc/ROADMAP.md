@@ -342,6 +342,7 @@ This milestone also enables full project-scope Code tasks. The `claude` CLI asks
   - `AuthFailure` — HTTP 401 → surface immediately and stop; retrying will never fix an auth problem
   Map Ollama HTTP error codes to these variants in the retry logic.
 - [ ] When `run_plan()` in `src/agents/specialists/mod.rs` falls back to Chat after a specialist exhausts all 3 retries, inject the failure reason as a system context message so the Persona can explain it to the user — for example: `"The Code specialist failed after 3 attempts (TokenOverflow). Answering from available context."` Never silently fall back without telling the user why.
+- [ ] Add live test `live_shell_confirmation_emits_awaiting_confirmation` to `tests/live/live_pipeline.rs` — sends a shell task (e.g., `"run ls src/"`) through the full pipeline and asserts that `AppEvent::AwaitingConfirmation` is emitted before any `Token` events arrive. Verifies the confirmation gate fires before execution.
 
 > **New files:** `src/agents/specialists/shell.rs`, `src/tools/shell_tools.rs`
 > **Changed:** `src/tools/mod.rs` (check_permissions + is_concurrency_safe on Tool trait, ToolRegistry), `src/config.rs` (PermissionMode enum), `src/agents/mod.rs` (AgentErrorKind enum), `src/agents/specialists/mod.rs` (failure reason injected on fallback)
@@ -375,6 +376,7 @@ The memory system gives the assistant persistence across sessions. The Persona l
 - [ ] Consolidation job (runs async after each session): if 3+ episodic entries agree on a user preference, promote it to semantic memory automatically
 - [ ] Threshold-triggered background extraction: when `App` detects the conversation is approaching the token budget (use `estimate_tokens()` from `compression.rs`), spawn a background `tokio::task` to summarize recent turns into the episodic store without interrupting the current conversation. Do not wait for the session to end — long sessions should be checkpointed continuously. Add a `compression_failures: u8` field to `App`; if the background task fails 3 times in a row, stop attempting auto-compression and show a warning in the UI so the user knows their context is no longer being saved.
 - [ ] Tests: `tests/memory_integration.rs` — write turns, retrieve by keyword, verify consolidation promotes correctly
+- [ ] Add live test `live_memory_stores_and_recalls_fact` to `tests/live/live_pipeline.rs` — sends `"remember that my favourite language is Rust"` through the full pipeline (routes to Memory specialist), then sends `"what is my favourite language?"` and asserts the response contains `"Rust"`. Verifies that semantic memory is written and read back within a single session.
 
 > **New files:** `src/memory/mod.rs`, `src/memory/episodic.rs`, `src/memory/semantic.rs`, `src/memory/retrieval.rs`, `src/agents/specialists/memory.rs`, `tests/memory_integration.rs`
 > **Changed:** `src/lib.rs` (pub mod memory)
@@ -465,6 +467,7 @@ Skills are user-defined slash commands that plug into the normal pipeline. Inste
   Run `git log --since="24 hours ago" --oneline --author="$(git config user.name)"` in the current project directory and format the output as a standup update: what I worked on, what I finished, and what is still in progress.
   ```
 - [ ] Tests: unit tests for YAML frontmatter parsing (valid file, missing required field, malformed YAML); integration test that registers a skill and verifies the input handler routes it correctly.
+- [ ] Add live test `live_skills_slash_command_dispatches_correctly` to `tests/live/live_pipeline.rs` — creates a temporary skill file with `name: greet` and prompt body `"say the word 'greetings' and nothing else"`, sends `/greet` through the input handler, and asserts the response contains `"greetings"`. Verifies the slash-command → prompt expansion → pipeline flow end-to-end.
 
 > **New files:** `src/skills/mod.rs`, `tests/skills_integration.rs`
 > **Changed:** `src/app.rs` (skill dispatch in input handler), `src/ui.rs` (/skills listing), `src/lib.rs` (pub mod skills)

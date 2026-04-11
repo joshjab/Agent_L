@@ -89,6 +89,17 @@ After completing any work tied to `doc/ROADMAP.md`:
 
 Do this immediately after the work is done, not at the end of a session.
 
+### Milestone commit
+
+After a milestone is fully complete (all tasks `[x]`, verification filled in, `cargo check && cargo clippy -- -D warnings && cargo test && cargo fmt --check` all pass), run:
+
+```bash
+git add src/ tests/ doc/ Cargo.toml Cargo.lock
+git commit -m "Complete milestone N: <title>"
+```
+
+Use the milestone number and title from ROADMAP.md. No push — commit only. Stage specific files, never `git add -A`.
+
 ### Writing style for ROADMAP entries
 
 Write ROADMAP tasks and verification steps as if explaining to a junior developer — use plain language, spell out what each step does and why, avoid jargon, and keep bullet points short and concrete. If a step involves a new concept (e.g., ReAct loop, wiremock FIFO), add a one-sentence explanation in parentheses.

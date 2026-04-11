@@ -208,6 +208,277 @@ async fn live_agent_l_routes_math_to_conversational() {
     );
 }
 
+// ─── Code specialist ──────────────────────────────────────────────────────────
+
+/// Agent L must classify code-writing requests as Task and route to Code, not Chat.
+#[tokio::test]
+#[ignore]
+async fn live_code_task_routes_to_code_specialist() {
+    use agent_l::agents::call_with_retry;
+    use serde_json::json;
+
+    let cfg = live_config();
+    let agent = OrchestratorAgent::new(model(&cfg));
+    let ctx =
+        vec![json!({"role": "user", "content": "write a bash script that prints hello world"})];
+    let url = chat_url(&cfg);
+
+    let plan = call_with_retry(
+        &agent,
+        &ctx,
+        |req| {
+            let url = url.clone();
+            async move { agent_l::ollama::post_json(&url, req).await }
+        },
+        3,
+    )
+    .await
+    .expect("orchestrator should classify successfully");
+
+    assert_eq!(
+        plan.steps[0].agent,
+        AgentKind::Code,
+        "bash-script request should route to Code specialist, got: {:?}",
+        plan.steps[0].agent
+    );
+}
+
+/// Code specialist must emit a limitation message for project-scope tasks
+/// (keyword heuristic detects "src/" and fires before any subprocess).
+/// Regression: the heuristic must short-circuit scope classification so
+/// the limitation message appears even when Ollama would classify differently.
+#[tokio::test]
+#[ignore]
+async fn live_code_project_scope_shows_limitation_message() {
+    let cfg = live_config();
+    let plan = TaskPlan {
+        intent_type: IntentType::Task,
+        steps: vec![PlanStep {
+            agent: AgentKind::Code,
+            // "src/" triggers the keyword heuristic → TaskScope::Project
+            // without hitting Ollama for scope classification.
+            task: "add a comment to src/main.rs explaining what the binary does".into(),
+            depends_on: None,
+        }],
+    };
+
+    let (tx, mut rx) = mpsc::unbounded_channel();
+    run_plan(
+        &plan,
+        &[],
+        model(&cfg),
+        &chat_url(&cfg),
+        std::path::Path::new("."),
+        tx,
+    )
+    .await
+    .expect("project-scope code task should return Ok (limitation, not error)");
+
+    let tokens: String = std::iter::from_fn(|| rx.try_recv().ok())
+        .filter_map(|e| {
+            if let AppEvent::Token(t) = e {
+                Some(t)
+            } else {
+                None
+            }
+        })
+        .collect();
+
+    assert!(
+        tokens.to_lowercase().contains("not supported")
+            || tokens.to_lowercase().contains("limitation")
+            || tokens.to_lowercase().contains("permission")
+            || tokens.to_lowercase().contains("m8"),
+        "Project-scope Code task should show limitation message, got: {tokens:?}"
+    );
+}
+
+// ─── Creative routing ─────────────────────────────────────────────────────────
+
+/// Agent L must classify creative writing requests as Creative or Conversational,
+/// not Factual — creative prompts must never route to Search.
+#[tokio::test]
+#[ignore]
+async fn live_creative_routes_to_chat_not_factual() {
+    use agent_l::agents::call_with_retry;
+    use serde_json::json;
+
+    let cfg = live_config();
+    let agent = OrchestratorAgent::new(model(&cfg));
+    let ctx = vec![json!({"role": "user", "content": "write a short haiku about Rust"})];
+    let url = chat_url(&cfg);
+
+    let plan = call_with_retry(
+        &agent,
+        &ctx,
+        |req| {
+            let url = url.clone();
+            async move { agent_l::ollama::post_json(&url, req).await }
+        },
+        3,
+    )
+    .await
+    .expect("orchestrator should classify successfully");
+
+    assert!(
+        matches!(
+            plan.intent_type,
+            IntentType::Creative | IntentType::Conversational
+        ),
+        "creative writing should not be Factual or Task, got: {:?}",
+        plan.intent_type
+    );
+    assert!(
+        !matches!(plan.steps[0].agent, AgentKind::Search),
+        "creative writing should not route to Search, got: {:?}",
+        plan.steps[0].agent
+    );
+}
+
+// ─── Search quality ───────────────────────────────────────────────────────────
+
+/// Search specialist response must include at least one URL — the model should
+/// never answer a factual question from its own knowledge without a citation.
+#[tokio::test]
+#[ignore]
+async fn live_search_response_includes_url() {
+    let cfg = live_config();
+    let plan = TaskPlan {
+        intent_type: IntentType::Factual,
+        steps: vec![PlanStep {
+            agent: AgentKind::Search,
+            task: "what is the latest stable version of Rust?".into(),
+            depends_on: None,
+        }],
+    };
+
+    let (tx, mut rx) = mpsc::unbounded_channel();
+    run_plan(
+        &plan,
+        &[],
+        model(&cfg),
+        &chat_url(&cfg),
+        std::path::Path::new("."),
+        tx,
+    )
+    .await
+    .expect("live search should succeed");
+
+    let tokens: String = std::iter::from_fn(|| rx.try_recv().ok())
+        .filter_map(|e| {
+            if let AppEvent::Token(t) = e {
+                Some(t)
+            } else {
+                None
+            }
+        })
+        .collect();
+
+    assert!(
+        tokens.contains("http://") || tokens.contains("https://"),
+        "Search response should contain at least one URL, got: {tokens:?}"
+    );
+}
+
+/// Local search must return file-path snippets from the project rather than
+/// a fabricated answer — the model must call `local_search` and report results.
+#[tokio::test]
+#[ignore]
+async fn live_local_search_returns_file_paths() {
+    let cfg = live_config();
+    let plan = TaskPlan {
+        intent_type: IntentType::Factual,
+        steps: vec![PlanStep {
+            agent: AgentKind::Search,
+            task: "search my project files for 'fn main'".into(),
+            depends_on: None,
+        }],
+    };
+
+    let (tx, mut rx) = mpsc::unbounded_channel();
+    // Pass the project root so local_search has real .rs files to grep.
+    run_plan(
+        &plan,
+        &[],
+        model(&cfg),
+        &chat_url(&cfg),
+        std::path::Path::new("."),
+        tx,
+    )
+    .await
+    .expect("live local search should succeed");
+
+    let tokens: String = std::iter::from_fn(|| rx.try_recv().ok())
+        .filter_map(|e| {
+            if let AppEvent::Token(t) = e {
+                Some(t)
+            } else {
+                None
+            }
+        })
+        .collect();
+
+    assert!(
+        tokens.contains(".rs") || tokens.contains("src/"),
+        "Local search response should reference .rs file paths, got: {tokens:?}"
+    );
+}
+
+// ─── Persona constraints ─────────────────────────────────────────────────────
+
+/// The Chat specialist must not refuse a simple conversational question.
+/// Regression: the persona system prompt must not over-constrain the model
+/// into refusing harmless queries with "I cannot" / "I'm unable to".
+#[tokio::test]
+#[ignore]
+async fn live_chat_does_not_refuse_conversational_query() {
+    let cfg = live_config();
+    let plan = TaskPlan {
+        intent_type: IntentType::Conversational,
+        steps: vec![PlanStep {
+            agent: AgentKind::Chat,
+            task: "how are you today? reply in one sentence".into(),
+            depends_on: None,
+        }],
+    };
+
+    let (tx, mut rx) = mpsc::unbounded_channel();
+    run_plan(
+        &plan,
+        &[],
+        model(&cfg),
+        &chat_url(&cfg),
+        std::path::Path::new("."),
+        tx,
+    )
+    .await
+    .expect("live chat should succeed");
+
+    let tokens: String = std::iter::from_fn(|| rx.try_recv().ok())
+        .filter_map(|e| {
+            if let AppEvent::Token(t) = e {
+                Some(t)
+            } else {
+                None
+            }
+        })
+        .collect();
+
+    assert!(
+        !tokens.is_empty(),
+        "Chat should produce a non-empty response"
+    );
+    let lower = tokens.to_lowercase();
+    assert!(
+        !lower.contains("i cannot")
+            && !lower.contains("i'm unable")
+            && !lower.contains("i am unable"),
+        "Chat should not refuse a simple conversational query, got: {tokens:?}"
+    );
+}
+
+// ─── Agent L routing (regressions) ───────────────────────────────────────────
+
 /// Agent L must route file-search queries to Search, not Code (regression for M7.5 routing bug).
 #[tokio::test]
 #[ignore]
