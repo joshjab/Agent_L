@@ -1,6 +1,5 @@
 use std::env;
 
-
 pub struct Config {
     pub base_url: String,
     pub model_name: String,

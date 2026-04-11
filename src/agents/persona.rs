@@ -1,4 +1,4 @@
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 pub const DEFAULT_PERSONA_PROMPT: &str = "You are Agent-L, a local personal assistant \
 running entirely on your device. You are helpful, concise, and direct. You never \
@@ -15,6 +15,12 @@ pub struct Persona {
     pub system_prompt: String,
 }
 
+impl Default for Persona {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Persona {
     /// Create a Persona.
     ///
@@ -29,7 +35,9 @@ impl Persona {
     /// Create a Persona with a specific prompt. Used in unit tests only.
     #[cfg(test)]
     pub fn from_prompt(prompt: impl Into<String>) -> Self {
-        Self { system_prompt: prompt.into() }
+        Self {
+            system_prompt: prompt.into(),
+        }
     }
 
     /// Returns a `{"role": "system", "content": "..."}` message for Ollama.
@@ -42,7 +50,7 @@ impl Persona {
     ///
     /// The reminder is a `{"role": "system", "content": GOAL_REMINDER_TEXT}` value.
     pub fn goal_reminder_if_needed(&self, turn_count: usize) -> Option<Value> {
-        if turn_count > 0 && turn_count % GOAL_REMINDER_INTERVAL == 0 {
+        if turn_count > 0 && turn_count.is_multiple_of(GOAL_REMINDER_INTERVAL) {
             Some(json!({"role": "system", "content": GOAL_REMINDER_TEXT}))
         } else {
             None
@@ -159,8 +167,14 @@ mod tests {
     #[test]
     fn goal_reminder_present_at_multiples_of_interval() {
         let p = Persona::from_prompt("x");
-        assert!(p.goal_reminder_if_needed(GOAL_REMINDER_INTERVAL * 2).is_some());
-        assert!(p.goal_reminder_if_needed(GOAL_REMINDER_INTERVAL * 3).is_some());
+        assert!(
+            p.goal_reminder_if_needed(GOAL_REMINDER_INTERVAL * 2)
+                .is_some()
+        );
+        assert!(
+            p.goal_reminder_if_needed(GOAL_REMINDER_INTERVAL * 3)
+                .is_some()
+        );
     }
 
     // ── build_messages ───────────────────────────────────────────────────────
@@ -201,9 +215,7 @@ mod tests {
         // turn 3 — not at a reminder interval
         let msgs = p.build_messages(&history, 3);
         assert_eq!(msgs.len(), 4); // just system + 3 history
-        assert!(msgs.iter().all(|m| {
-            m["content"] != GOAL_REMINDER_TEXT
-        }));
+        assert!(msgs.iter().all(|m| { m["content"] != GOAL_REMINDER_TEXT }));
     }
 
     #[test]

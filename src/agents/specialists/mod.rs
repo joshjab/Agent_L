@@ -1,13 +1,14 @@
 pub mod chat;
 pub mod code;
+pub mod search;
 
 use std::path::Path;
 
 use serde_json::Value;
 use tokio::sync::mpsc;
 
-use crate::app::AppEvent;
 use crate::agents::orchestrator::{AgentKind, TaskPlan};
+use crate::app::AppEvent;
 
 use chat::ChatSpecialist;
 
@@ -57,15 +58,13 @@ pub async fn run_plan(
                 ChatSpecialist
                     .run(&step.task, messages, context, model, chat_url, tx.clone())
                     .await
-                    .map_err(|e| {
+                    .inspect_err(|_| {
                         let _ = tx.send(AppEvent::StreamDone);
-                        e
                     })?
             }
             AgentKind::Code => {
                 had_streaming_step = true;
-                let specialist =
-                    code::CodeSpecialist::new(model, chat_url, working_dir);
+                let specialist = code::CodeSpecialist::new(model, chat_url, working_dir);
                 let output = specialist
                     .run(&step.task, tx.clone())
                     .await
@@ -80,12 +79,20 @@ pub async fn run_plan(
                 }
                 output
             }
+            AgentKind::Search => {
+                had_streaming_step = true;
+                let specialist = search::SearchSpecialist::new(model, chat_url);
+                specialist
+                    .run(&step.task, context, tx.clone())
+                    .await
+                    .map_err(|msg| {
+                        let _ = tx.send(AppEvent::StreamDone);
+                        SpecialistError { message: msg }
+                    })?
+            }
             // Not yet implemented — return a silent placeholder so `depends_on`
             // chains still get *something*, but don't stream duplicate responses.
-            AgentKind::Search
-            | AgentKind::Shell
-            | AgentKind::Calendar
-            | AgentKind::Memory => {
+            AgentKind::Shell | AgentKind::Calendar | AgentKind::Memory => {
                 format!("[{:?} specialist not yet implemented]", step.agent)
             }
         };
@@ -101,9 +108,8 @@ pub async fn run_plan(
         ChatSpecialist
             .run(fallback_task, messages, None, model, chat_url, tx.clone())
             .await
-            .map_err(|e| {
+            .inspect_err(|_| {
                 let _ = tx.send(AppEvent::StreamDone);
-                e
             })?;
     }
 
@@ -117,7 +123,6 @@ pub async fn run_plan(
 mod tests {
     use super::*;
     use crate::agents::orchestrator::{IntentType, PlanStep};
-    use serde_json::json;
     use wiremock::matchers::{method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
@@ -146,9 +151,7 @@ mod tests {
         let server = MockServer::start().await;
         Mock::given(method("POST"))
             .and(path("/api/chat"))
-            .respond_with(
-                ResponseTemplate::new(200).set_body_string(ndjson(&[("hi", true)])),
-            )
+            .respond_with(ResponseTemplate::new(200).set_body_string(ndjson(&[("hi", true)])))
             .mount(&server)
             .await;
 
@@ -156,7 +159,9 @@ mod tests {
         let url = format!("{}/api/chat", server.uri());
         let plan = chat_plan("say hi");
 
-        run_plan(&plan, &[], "m", &url, std::path::Path::new("."), tx).await.unwrap();
+        run_plan(&plan, &[], "m", &url, std::path::Path::new("."), tx)
+            .await
+            .unwrap();
 
         let mut tokens = Vec::new();
         let mut saw_done = false;
@@ -179,7 +184,16 @@ mod tests {
         };
         let (tx, mut rx) = mpsc::unbounded_channel();
 
-        run_plan(&plan, &[], "m", "http://unused", std::path::Path::new("."), tx).await.unwrap();
+        run_plan(
+            &plan,
+            &[],
+            "m",
+            "http://unused",
+            std::path::Path::new("."),
+            tx,
+        )
+        .await
+        .unwrap();
 
         let mut saw_done = false;
         while let Ok(event) = rx.try_recv() {
@@ -195,9 +209,7 @@ mod tests {
         let server = MockServer::start().await;
         Mock::given(method("POST"))
             .and(path("/api/chat"))
-            .respond_with(
-                ResponseTemplate::new(200).set_body_string(ndjson(&[("fallback", true)])),
-            )
+            .respond_with(ResponseTemplate::new(200).set_body_string(ndjson(&[("fallback", true)])))
             .mount(&server)
             .await;
 
@@ -212,10 +224,18 @@ mod tests {
         let (tx, mut rx) = mpsc::unbounded_channel();
         let url = format!("{}/api/chat", server.uri());
 
-        run_plan(&plan, &[], "m", &url, std::path::Path::new("."), tx).await.unwrap();
+        run_plan(&plan, &[], "m", &url, std::path::Path::new("."), tx)
+            .await
+            .unwrap();
 
         let tokens: Vec<_> = std::iter::from_fn(|| rx.try_recv().ok())
-            .filter_map(|e| if let AppEvent::Token(t) = e { Some(t) } else { None })
+            .filter_map(|e| {
+                if let AppEvent::Token(t) = e {
+                    Some(t)
+                } else {
+                    None
+                }
+            })
             .collect();
         assert!(!tokens.is_empty(), "Unknown should fall back to Chat");
     }
@@ -228,106 +248,67 @@ mod tests {
         // First step response
         Mock::given(method("POST"))
             .and(path("/api/chat"))
-            .respond_with(
-                ResponseTemplate::new(200).set_body_string(ndjson(&[("step1", true)])),
-            )
+            .respond_with(ResponseTemplate::new(200).set_body_string(ndjson(&[("step1", true)])))
             .up_to_n_times(1)
             .mount(&server)
             .await;
         // Second step response
         Mock::given(method("POST"))
             .and(path("/api/chat"))
-            .respond_with(
-                ResponseTemplate::new(200).set_body_string(ndjson(&[("step2", true)])),
-            )
+            .respond_with(ResponseTemplate::new(200).set_body_string(ndjson(&[("step2", true)])))
             .mount(&server)
             .await;
 
         let plan = TaskPlan {
             intent_type: IntentType::Task,
             steps: vec![
-                PlanStep { agent: AgentKind::Chat, task: "step1".into(), depends_on: None },
-                PlanStep { agent: AgentKind::Chat, task: "step2".into(), depends_on: Some(0) },
+                PlanStep {
+                    agent: AgentKind::Chat,
+                    task: "step1".into(),
+                    depends_on: None,
+                },
+                PlanStep {
+                    agent: AgentKind::Chat,
+                    task: "step2".into(),
+                    depends_on: Some(0),
+                },
             ],
         };
         let (tx, mut rx) = mpsc::unbounded_channel();
         let url = format!("{}/api/chat", server.uri());
 
-        run_plan(&plan, &[], "m", &url, std::path::Path::new("."), tx).await.unwrap();
+        run_plan(&plan, &[], "m", &url, std::path::Path::new("."), tx)
+            .await
+            .unwrap();
 
         let tokens: String = std::iter::from_fn(|| rx.try_recv().ok())
-            .filter_map(|e| if let AppEvent::Token(t) = e { Some(t) } else { None })
+            .filter_map(|e| {
+                if let AppEvent::Token(t) = e {
+                    Some(t)
+                } else {
+                    None
+                }
+            })
             .collect();
         assert!(tokens.contains("step1") && tokens.contains("step2"));
     }
 
-    // ── unimplemented specialists ────────────────────────────────────────────
+    // ── concurrency_safe ─────────────────────────────────────────────────────
 
-    #[tokio::test]
-    async fn search_only_plan_falls_back_to_chat_once() {
-        // Agent L returns [Search] for a factual query. Since Search isn't
-        // implemented yet, run_plan must still produce exactly ONE streaming
-        // response (the Chat fallback) — not zero, not three.
-        let server = MockServer::start().await;
-        Mock::given(method("POST"))
-            .and(path("/api/chat"))
-            .respond_with(
-                ResponseTemplate::new(200).set_body_string(ndjson(&[("answer", true)])),
-            )
-            .mount(&server)
-            .await;
-
-        let plan = TaskPlan {
-            intent_type: IntentType::Factual,
-            steps: vec![PlanStep {
-                agent: AgentKind::Search,
-                task: "look up capital of France".into(),
-                depends_on: None,
-            }],
-        };
-        let (tx, mut rx) = mpsc::unbounded_channel();
-        let url = format!("{}/api/chat", server.uri());
-
-        run_plan(&plan, &[], "m", &url, std::path::Path::new("."), tx).await.unwrap();
-
-        let tokens: Vec<_> = std::iter::from_fn(|| rx.try_recv().ok())
-            .filter_map(|e| if let AppEvent::Token(t) = e { Some(t) } else { None })
-            .collect();
-        assert!(!tokens.is_empty(), "expected a fallback Chat response");
-        // Only one HTTP call should have been made (the fallback Chat call).
-        assert_eq!(server.received_requests().await.unwrap().len(), 1);
-    }
-
-    #[tokio::test]
-    async fn multi_step_with_only_unimplemented_sends_one_response() {
-        // A plan like [Search, Shell] should produce exactly one response via
-        // the Chat fallback, not two (one per step).
-        let server = MockServer::start().await;
-        Mock::given(method("POST"))
-            .and(path("/api/chat"))
-            .respond_with(
-                ResponseTemplate::new(200).set_body_string(ndjson(&[("one", true)])),
-            )
-            .mount(&server)
-            .await;
-
-        let plan = TaskPlan {
-            intent_type: IntentType::Task,
-            steps: vec![
-                PlanStep { agent: AgentKind::Search, task: "search".into(), depends_on: None },
-                PlanStep { agent: AgentKind::Shell, task: "run".into(), depends_on: Some(0) },
-            ],
-        };
-        let (tx, mut rx) = mpsc::unbounded_channel();
-        let url = format!("{}/api/chat", server.uri());
-
-        run_plan(&plan, &[], "m", &url, std::path::Path::new("."), tx).await.unwrap();
-
-        let tokens: String = std::iter::from_fn(|| rx.try_recv().ok())
-            .filter_map(|e| if let AppEvent::Token(t) = e { Some(t) } else { None })
-            .collect();
-        assert_eq!(tokens, "one", "expected exactly one Chat fallback response");
-        assert_eq!(server.received_requests().await.unwrap().len(), 1);
+    #[test]
+    fn concurrency_safe_flags_are_correct() {
+        assert!(
+            chat::ChatSpecialist::concurrency_safe(),
+            "Chat should be concurrency-safe"
+        );
+        assert!(
+            search::SearchSpecialist::concurrency_safe(),
+            "Search should be concurrency-safe"
+        );
+        assert!(
+            !code::CodeSpecialist::concurrency_safe(),
+            "Code should NOT be concurrency-safe"
+        );
     }
 
     // ── sad-path ─────────────────────────────────────────────────────────────

@@ -23,10 +23,10 @@ fn single_step(intent: &str, agent: &str) -> serde_json::Value {
 // Helpers
 // ---------------------------------------------------------------------------
 
-async fn run(server: &MockServer, context: serde_json::Value) -> Result<
-    agent_l::agents::orchestrator::TaskPlan,
-    agent_l::agents::AgentError,
-> {
+async fn run(
+    server: &MockServer,
+    context: serde_json::Value,
+) -> Result<agent_l::agents::orchestrator::TaskPlan, agent_l::agents::AgentError> {
     let agent = OrchestratorAgent::new("test-model");
     let url = format!("{}/api/chat", server.uri());
     let ctx = vec![context];
@@ -59,9 +59,12 @@ async fn factual_intent_routes_to_search() {
         .mount(&server)
         .await;
 
-    let plan = run(&server, json!({"role": "user", "content": "what is the capital of France?"}))
-        .await
-        .unwrap();
+    let plan = run(
+        &server,
+        json!({"role": "user", "content": "what is the capital of France?"}),
+    )
+    .await
+    .unwrap();
 
     assert_eq!(plan.intent_type, IntentType::Factual);
     assert_eq!(plan.steps.len(), 1);
@@ -102,15 +105,16 @@ async fn multistep_task_with_depends_on() {
     });
     Mock::given(method("POST"))
         .and(path("/api/chat"))
-        .respond_with(
-            ResponseTemplate::new(200).set_body_json(ollama_envelope(plan_json)),
-        )
+        .respond_with(ResponseTemplate::new(200).set_body_json(ollama_envelope(plan_json)))
         .mount(&server)
         .await;
 
-    let plan = run(&server, json!({"role": "user", "content": "search for Rust news and summarise it"}))
-        .await
-        .unwrap();
+    let plan = run(
+        &server,
+        json!({"role": "user", "content": "search for Rust news and summarise it"}),
+    )
+    .await
+    .unwrap();
 
     assert_eq!(plan.intent_type, IntentType::Task);
     assert_eq!(plan.steps.len(), 2);
@@ -160,9 +164,7 @@ async fn over_five_steps_exhausts_retries_and_returns_error() {
     });
     Mock::given(method("POST"))
         .and(path("/api/chat"))
-        .respond_with(
-            ResponseTemplate::new(200).set_body_json(ollama_envelope(bad_plan)),
-        )
+        .respond_with(ResponseTemplate::new(200).set_body_json(ollama_envelope(bad_plan)))
         .mount(&server)
         .await;
 
@@ -173,7 +175,8 @@ async fn over_five_steps_exhausts_retries_and_returns_error() {
     assert_eq!(err.attempts, 3, "all 3 attempts should be exhausted");
     assert!(
         err.last_error.contains("maximum"),
-        "error should mention the step limit: {}", err.last_error
+        "error should mention the step limit: {}",
+        err.last_error
     );
 
     // Verify the server saw exactly 3 requests (one per attempt)
@@ -217,8 +220,7 @@ async fn retry_prompt_embeds_error_from_previous_attempt() {
     // The second request should contain the parse error in its body
     let requests = server.received_requests().await.unwrap();
     assert_eq!(requests.len(), 2, "should have made exactly 2 requests");
-    let second_body: serde_json::Value =
-        serde_json::from_slice(&requests[1].body).unwrap();
+    let second_body: serde_json::Value = serde_json::from_slice(&requests[1].body).unwrap();
     let messages = second_body["messages"].as_array().unwrap();
     let last_msg = messages.last().unwrap();
     assert_eq!(last_msg["role"], "user");

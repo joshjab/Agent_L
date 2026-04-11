@@ -1,10 +1,10 @@
 use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use tokio::sync::mpsc;
 
-use crate::agents::{schema::ParseError, Agent};
+use crate::agents::{Agent, schema::ParseError};
 use crate::app::AppEvent;
 use crate::tools::claude_code::ClaudeCodeInvoker;
 
@@ -53,7 +53,9 @@ pub struct ScopeDetector {
 
 impl ScopeDetector {
     pub fn new(model: impl Into<String>) -> Self {
-        Self { model: model.into() }
+        Self {
+            model: model.into(),
+        }
     }
 }
 
@@ -62,9 +64,7 @@ impl Agent for ScopeDetector {
 
     fn prompt(&self, context: &[Value], error_feedback: Option<&ParseError>) -> Value {
         // context[0] is the task description the Code specialist passes in
-        let mut messages = vec![
-            json!({ "role": "system", "content": SCOPE_SYSTEM_PROMPT }),
-        ];
+        let mut messages = vec![json!({ "role": "system", "content": SCOPE_SYSTEM_PROMPT })];
         messages.extend_from_slice(context);
 
         if let Some(err) = error_feedback {
@@ -91,21 +91,22 @@ impl Agent for ScopeDetector {
             message: format!("Ollama response is not valid JSON: {e} (raw: {response:?})"),
         })?;
 
-        let content = envelope["message"]["content"].as_str().ok_or_else(|| ParseError {
-            message: format!(
-                "Ollama response missing message.content string (got: {envelope})"
-            ),
-        })?;
+        let content = envelope["message"]["content"]
+            .as_str()
+            .ok_or_else(|| ParseError {
+                message: format!(
+                    "Ollama response missing message.content string (got: {envelope})"
+                ),
+            })?;
 
         #[derive(Deserialize)]
         struct ScopePayload {
             scope: TaskScope,
         }
 
-        let payload: ScopePayload =
-            serde_json::from_str(content).map_err(|e| ParseError {
-                message: format!("scope JSON is invalid: {e} (content: {content:?})"),
-            })?;
+        let payload: ScopePayload = serde_json::from_str(content).map_err(|e| ParseError {
+            message: format!("scope JSON is invalid: {e} (content: {content:?})"),
+        })?;
 
         Ok(payload.scope)
     }
@@ -124,19 +125,37 @@ fn classify_scope_from_keywords(task: &str) -> Option<TaskScope> {
     let lower = task.to_lowercase();
 
     let project_signals: &[&str] = &[
-        "src/", "tests/", ".rs", ".toml", ".md", ".json", ".yaml", ".yml",
-        "in this project", "in the project", "in the codebase", "in the repo",
-        "this file", "that file",
+        "src/",
+        "tests/",
+        ".rs",
+        ".toml",
+        ".md",
+        ".json",
+        ".yaml",
+        ".yml",
+        "in this project",
+        "in the project",
+        "in the codebase",
+        "in the repo",
+        "this file",
+        "that file",
     ];
     if project_signals.iter().any(|s| lower.contains(s)) {
         return Some(TaskScope::Project);
     }
 
     let one_off_signals: &[&str] = &[
-        "write a script", "write a bash", "write a python", "write a program",
-        "create a script", "generate a script", "make a script",
-        "write a function that", "write a function to",
-        "create a function", "make a function",
+        "write a script",
+        "write a bash",
+        "write a python",
+        "write a program",
+        "create a script",
+        "generate a script",
+        "make a script",
+        "write a function that",
+        "write a function to",
+        "create a function",
+        "make a function",
     ];
     if one_off_signals.iter().any(|s| lower.contains(s)) {
         return Some(TaskScope::OneOff);
@@ -178,6 +197,13 @@ pub struct CodeSpecialist {
 }
 
 impl CodeSpecialist {
+    /// Code may write files or run subprocesses — not safe to run in parallel
+    /// with other specialists. Used by M8 parallel runner.
+    #[allow(dead_code)]
+    pub fn concurrency_safe() -> bool {
+        false
+    }
+
     pub fn new(
         model: impl Into<String>,
         chat_url: impl Into<String>,
@@ -229,8 +255,8 @@ impl CodeSpecialist {
         match scope {
             TaskScope::OneOff => {
                 // Run in a fresh temporary directory; clean up when done.
-                let tmp = tempfile::tempdir()
-                    .map_err(|e| format!("failed to create temp dir: {e}"))?;
+                let tmp =
+                    tempfile::tempdir().map_err(|e| format!("failed to create temp dir: {e}"))?;
                 let output = self
                     .invoker
                     .run(task, tmp.path())
@@ -276,7 +302,10 @@ mod tests {
         let req = agent().prompt(&[], None);
         assert_eq!(req["model"], "test-model");
         assert_eq!(req["stream"], false);
-        assert!(req["format"].is_object(), "format should be a JSON schema object");
+        assert!(
+            req["format"].is_object(),
+            "format should be a JSON schema object"
+        );
     }
 
     #[test]
@@ -285,8 +314,14 @@ mod tests {
         let first = &req["messages"][0];
         assert_eq!(first["role"], "system");
         let content = first["content"].as_str().unwrap();
-        assert!(content.contains("one_off"), "system prompt should mention one_off");
-        assert!(content.contains("project"), "system prompt should mention project");
+        assert!(
+            content.contains("one_off"),
+            "system prompt should mention one_off"
+        );
+        assert!(
+            content.contains("project"),
+            "system prompt should mention project"
+        );
     }
 
     #[test]
@@ -300,7 +335,9 @@ mod tests {
 
     #[test]
     fn prompt_appends_error_feedback_on_retry() {
-        let err = ParseError { message: "scope field missing".into() };
+        let err = ParseError {
+            message: "scope field missing".into(),
+        };
         let req = agent().prompt(&[], Some(&err));
         let messages = req["messages"].as_array().unwrap();
         let last = messages.last().unwrap();
@@ -349,8 +386,7 @@ mod tests {
 
     #[test]
     fn parse_fails_when_scope_field_missing() {
-        let raw =
-            json!({ "message": { "content": r#"{"other":"field"}"# } }).to_string();
+        let raw = json!({ "message": { "content": r#"{"other":"field"}"# } }).to_string();
         let err = agent().parse(&raw).unwrap_err();
         assert!(err.message.contains("scope JSON is invalid"));
     }
@@ -474,9 +510,7 @@ mod tests {
         let server = MockServer::start().await;
         Mock::given(method("POST"))
             .and(path("/api/chat"))
-            .respond_with(
-                ResponseTemplate::new(200).set_body_string(scope_response("one_off")),
-            )
+            .respond_with(ResponseTemplate::new(200).set_body_string(scope_response("one_off")))
             .mount(&server)
             .await;
 
@@ -496,9 +530,7 @@ mod tests {
         let server = MockServer::start().await;
         Mock::given(method("POST"))
             .and(path("/api/chat"))
-            .respond_with(
-                ResponseTemplate::new(200).set_body_string(scope_response("one_off")),
-            )
+            .respond_with(ResponseTemplate::new(200).set_body_string(scope_response("one_off")))
             .mount(&server)
             .await;
 
@@ -528,9 +560,7 @@ mod tests {
         let server = MockServer::start().await;
         Mock::given(method("POST"))
             .and(path("/api/chat"))
-            .respond_with(
-                ResponseTemplate::new(200).set_body_string(scope_response("project")),
-            )
+            .respond_with(ResponseTemplate::new(200).set_body_string(scope_response("project")))
             .mount(&server)
             .await;
 
@@ -544,7 +574,13 @@ mod tests {
 
         assert_eq!(result, "", "project path returns empty string");
         let tokens: String = std::iter::from_fn(|| rx.try_recv().ok())
-            .filter_map(|e| if let AppEvent::Token(t) = e { Some(t) } else { None })
+            .filter_map(|e| {
+                if let AppEvent::Token(t) = e {
+                    Some(t)
+                } else {
+                    None
+                }
+            })
             .collect();
         assert!(
             tokens.contains("not supported") || tokens.contains("limitation"),
@@ -615,9 +651,7 @@ mod tests {
         let server = MockServer::start().await;
         Mock::given(method("POST"))
             .and(path("/api/chat"))
-            .respond_with(
-                ResponseTemplate::new(200).set_body_string(scope_response("project")),
-            )
+            .respond_with(ResponseTemplate::new(200).set_body_string(scope_response("project")))
             .mount(&server)
             .await;
 
@@ -633,7 +667,13 @@ mod tests {
         assert!(result.is_ok(), "project path should not invoke the binary");
 
         let tokens: Vec<String> = std::iter::from_fn(|| rx.try_recv().ok())
-            .filter_map(|e| if let AppEvent::Token(t) = e { Some(t) } else { None })
+            .filter_map(|e| {
+                if let AppEvent::Token(t) = e {
+                    Some(t)
+                } else {
+                    None
+                }
+            })
             .collect();
         let combined = tokens.join("");
         assert!(
@@ -662,7 +702,13 @@ mod tests {
 
         assert!(result.is_ok(), "should succeed via heuristic, not Ollama");
         let tokens: Vec<String> = std::iter::from_fn(|| rx.try_recv().ok())
-            .filter_map(|e| if let AppEvent::Token(t) = e { Some(t) } else { None })
+            .filter_map(|e| {
+                if let AppEvent::Token(t) = e {
+                    Some(t)
+                } else {
+                    None
+                }
+            })
             .collect();
         assert!(!tokens.is_empty(), "should have sent a limitation message");
     }
@@ -673,9 +719,7 @@ mod tests {
         let server = MockServer::start().await;
         Mock::given(method("POST"))
             .and(path("/api/chat"))
-            .respond_with(
-                ResponseTemplate::new(200).set_body_string(scope_response("one_off")),
-            )
+            .respond_with(ResponseTemplate::new(200).set_body_string(scope_response("one_off")))
             .mount(&server)
             .await;
 

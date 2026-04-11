@@ -1,13 +1,13 @@
+use crate::agents::orchestrator::{AgentKind, IntentType, TaskPlan};
+use crate::agents::specialists::code::TaskScope;
+use crate::app::{App, Role, StartupState};
 use ratatui::{
     buffer::Buffer,
-    layout::{Constraint, Layout, Rect, Alignment},
+    layout::{Alignment, Constraint, Layout, Rect},
     style::{Color, Modifier, Style, Stylize},
     text::{Line, Span, Text},
     widgets::{Block, BorderType, Paragraph, Widget, Wrap},
 };
-use crate::agents::orchestrator::{AgentKind, IntentType, TaskPlan};
-use crate::agents::specialists::code::TaskScope;
-use crate::app::{App, Role, StartupState};
 
 const SPINNER: &[&str] = &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 
@@ -29,27 +29,52 @@ impl Widget for &App {
 
         // Prompt Block
         if self.startup_state != StartupState::Ready {
-            Paragraph::new(Span::styled("(waiting for Ollama...)", Style::default().fg(Color::DarkGray).add_modifier(Modifier::DIM)))
-                .block(Block::bordered().title(" Prompt ").border_style(Style::default().fg(Color::DarkGray)))
-                .render(chunks[1], buf);
+            Paragraph::new(Span::styled(
+                "(waiting for Ollama...)",
+                Style::default()
+                    .fg(Color::DarkGray)
+                    .add_modifier(Modifier::DIM),
+            ))
+            .block(
+                Block::bordered()
+                    .title(" Prompt ")
+                    .border_style(Style::default().fg(Color::DarkGray)),
+            )
+            .render(chunks[1], buf);
         } else {
             Paragraph::new(format!("> {}", self.input))
-                .block(Block::bordered().title(" Prompt ").border_style(Style::default().fg(Color::Cyan)))
+                .block(
+                    Block::bordered()
+                        .title(" Prompt ")
+                        .border_style(Style::default().fg(Color::Cyan)),
+                )
                 .render(chunks[1], buf);
         }
 
         // Status line: model, token counts (↑ prompt / ↓ generated), optional routing decision
         let mut status_spans: Vec<Span> = vec![
             " MODEL: ".into(),
-            Span::styled(self.model_name.clone(), Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
+            Span::styled(
+                self.model_name.clone(),
+                Style::default()
+                    .fg(Color::Yellow)
+                    .add_modifier(Modifier::BOLD),
+            ),
             " | ctx: ".into(),
-            Span::styled(self.context_tokens.to_string(), Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
+            Span::styled(
+                self.context_tokens.to_string(),
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD),
+            ),
         ];
         if let Some(plan) = &self.route_decision {
             status_spans.push(" | ".into());
             status_spans.push(Span::styled(
                 format_route_decision(plan, self.code_scope.as_ref()),
-                Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD),
             ));
         }
         status_spans.push(" | [Ctrl+Q] Quit ".into());
@@ -113,7 +138,9 @@ fn render_startup(app: &App, area: Rect, buf: &mut Buffer) {
             lines.push(Line::from(""));
             lines.push(Line::from(Span::styled(
                 "Press Ctrl+Q to quit",
-                Style::default().fg(Color::DarkGray).add_modifier(Modifier::DIM),
+                Style::default()
+                    .fg(Color::DarkGray)
+                    .add_modifier(Modifier::DIM),
             )));
         }
         StartupState::Ready => {}
@@ -123,8 +150,11 @@ fn render_startup(app: &App, area: Rect, buf: &mut Buffer) {
         .block(
             Block::bordered()
                 .title(
-                    Line::from(" 🦙 Agent L ")
-                        .style(Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
+                    Line::from(" 🦙 Agent L ").style(
+                        Style::default()
+                            .fg(Color::Yellow)
+                            .add_modifier(Modifier::BOLD),
+                    ),
                 )
                 .title_alignment(Alignment::Center)
                 .border_type(BorderType::Rounded),
@@ -159,8 +189,11 @@ fn render_chat(app: &App, area: Rect, buf: &mut Buffer) {
         .block(
             Block::bordered()
                 .title(
-                    Line::from(" 🦙 Agent L ")
-                        .style(Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
+                    Line::from(" 🦙 Agent L ").style(
+                        Style::default()
+                            .fg(Color::Yellow)
+                            .add_modifier(Modifier::BOLD),
+                    ),
                 )
                 .title_alignment(Alignment::Center)
                 .border_type(BorderType::Rounded),
@@ -187,14 +220,14 @@ pub fn format_route_decision(plan: &TaskPlan, code_scope: Option<&TaskScope>) ->
             let base = agent_kind_label(&s.agent);
             if seen.insert(base) {
                 // Annotate Code with its scope when known.
-                if matches!(s.agent, AgentKind::Code) {
-                    if let Some(scope) = code_scope {
-                        let label = match scope {
-                            TaskScope::OneOff => "Code (one-off)",
-                            TaskScope::Project => "Code (project)",
-                        };
-                        return Some(label.to_string());
-                    }
+                if matches!(s.agent, AgentKind::Code)
+                    && let Some(scope) = code_scope
+                {
+                    let label = match scope {
+                        TaskScope::OneOff => "Code (one-off)",
+                        TaskScope::Project => "Code (project)",
+                    };
+                    return Some(label.to_string());
                 }
                 Some(base.to_string())
             } else {
@@ -206,26 +239,98 @@ pub fn format_route_decision(plan: &TaskPlan, code_scope: Option<&TaskScope>) ->
     let agents_str = agents.join(" + ");
 
     match plan.intent_type {
-        IntentType::Factual  => format!("Agent L \u{2192} {agents_str} (Factual)"),
+        IntentType::Factual => format!("Agent L \u{2192} {agents_str} (Factual)"),
         IntentType::Creative => format!("Agent L \u{2192} {agents_str} (Creative)"),
-        _                    => format!("Agent L \u{2192} {agents_str}"),
+        _ => format!("Agent L \u{2192} {agents_str}"),
     }
 }
 
 fn agent_kind_label(kind: &AgentKind) -> &'static str {
     match kind {
-        AgentKind::Chat     => "Chat",
-        AgentKind::Code     => "Code",
-        AgentKind::Search   => "Search",
-        AgentKind::Shell    => "Shell",
+        AgentKind::Chat => "Chat",
+        AgentKind::Code => "Code",
+        AgentKind::Search => "Search",
+        AgentKind::Shell => "Shell",
         AgentKind::Calendar => "Calendar",
-        AgentKind::Memory   => "Memory",
-        AgentKind::Unknown  => "Unknown",
+        AgentKind::Memory => "Memory",
+        AgentKind::Unknown => "Unknown",
     }
 }
 
-fn parse_simple_markdown(text: &str) -> Vec<Line<'_>> {
-    let mut lines: Vec<Line<'_>> = Vec::new();
+/// Wrap a URL with OSC 8 terminal hyperlink escape sequences.
+///
+/// Terminals that support OSC 8 (iTerm2, Kitty, recent GNOME Terminal) will
+/// render this as a clickable link; others display the URL text as-is.
+fn osc8_link(url: &str) -> String {
+    format!("\x1b]8;;{url}\x1b\\{url}\x1b]8;;\x1b\\")
+}
+
+/// Split `text` into spans, wrapping any `https://` URLs with OSC 8 sequences.
+fn linkify_text(text: &str) -> Vec<Span<'static>> {
+    let mut spans: Vec<Span<'static>> = Vec::new();
+    let mut remaining = text;
+
+    while let Some(pos) = remaining.find("https://") {
+        if pos > 0 {
+            spans.push(Span::raw(remaining[..pos].to_string()));
+        }
+        let url_str = &remaining[pos..];
+        // URL ends at whitespace or closing punctuation that follows a URL.
+        let end = url_str
+            .find(|c: char| c.is_whitespace() || matches!(c, ')' | ']' | '"' | '\'' | ',' | ';'))
+            .unwrap_or(url_str.len());
+        spans.push(Span::raw(osc8_link(&url_str[..end])));
+        remaining = &url_str[end..];
+    }
+
+    if !remaining.is_empty() {
+        spans.push(Span::raw(remaining.to_string()));
+    }
+
+    spans
+}
+
+/// Process a single prose line into styled spans, handling `**bold**` markers
+/// and `https://` URL linkification with OSC 8 sequences.
+fn process_prose_line(line: &str) -> Vec<Span<'static>> {
+    let mut spans: Vec<Span<'static>> = Vec::new();
+
+    if line.contains("**") {
+        let parts: Vec<&str> = line.split("**").collect();
+        for (i, part) in parts.iter().enumerate() {
+            if i % 2 == 1 {
+                // Odd parts are bold — no URL linkification inside bold text.
+                spans.push(Span::styled(
+                    part.to_string(),
+                    Style::default()
+                        .add_modifier(Modifier::BOLD)
+                        .fg(Color::Yellow),
+                ));
+            } else {
+                // Even parts are normal prose — linkify URLs, but always emit a
+                // span (even empty) to preserve the span count tests rely on.
+                let sub = linkify_text(part);
+                if sub.is_empty() {
+                    spans.push(Span::raw(part.to_string()));
+                } else {
+                    spans.extend(sub);
+                }
+            }
+        }
+    } else {
+        let sub = linkify_text(line);
+        if sub.is_empty() {
+            spans.push(Span::raw(line.to_string()));
+        } else {
+            spans.extend(sub);
+        }
+    }
+
+    spans
+}
+
+fn parse_simple_markdown(text: &str) -> Vec<Line<'static>> {
+    let mut lines: Vec<Line<'static>> = Vec::new();
     let mut in_code_block = false;
 
     for raw_line in text.lines() {
@@ -247,32 +352,20 @@ fn parse_simple_markdown(text: &str) -> Vec<Line<'_>> {
                 };
                 lines.push(Line::from(Span::styled(
                     label,
-                    Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
+                    Style::default()
+                        .fg(Color::Yellow)
+                        .add_modifier(Modifier::BOLD),
                 )));
                 in_code_block = true;
             }
         } else if in_code_block {
             // Inside a code block: preserve the raw content, no bold processing.
             lines.push(Line::from(Span::styled(
-                raw_line,
+                raw_line.to_string(),
                 Style::default().fg(Color::Green),
             )));
         } else {
-            // Normal prose: process **bold** markers.
-            let mut spans = Vec::new();
-            if raw_line.contains("**") {
-                let parts: Vec<&str> = raw_line.split("**").collect();
-                for (i, part) in parts.iter().enumerate() {
-                    if i % 2 == 1 {
-                        spans.push(Span::styled(*part, Style::default().add_modifier(Modifier::BOLD).fg(Color::Yellow)));
-                    } else {
-                        spans.push(Span::raw(*part));
-                    }
-                }
-            } else {
-                spans.push(Span::raw(raw_line));
-            }
-            lines.push(Line::from(spans));
+            lines.push(Line::from(process_prose_line(raw_line)));
         }
     }
 
@@ -297,7 +390,11 @@ mod tests {
             intent_type: intent,
             steps: agents
                 .iter()
-                .map(|a| PlanStep { agent: a.clone(), task: "x".into(), depends_on: None })
+                .map(|a| PlanStep {
+                    agent: a.clone(),
+                    task: "x".into(),
+                    depends_on: None,
+                })
                 .collect(),
         }
     }
@@ -322,20 +419,32 @@ mod tests {
 
     #[test]
     fn route_task_multi_step_joins_with_plus() {
-        let s = format_route_decision(&plan(IntentType::Task, &[AgentKind::Shell, AgentKind::Code]), None);
+        let s = format_route_decision(
+            &plan(IntentType::Task, &[AgentKind::Shell, AgentKind::Code]),
+            None,
+        );
         assert_eq!(s, "Agent L → Shell + Code");
     }
 
     #[test]
     fn route_deduplicates_repeated_agents() {
         // Two steps with the same agent should appear only once
-        let s = format_route_decision(&plan(IntentType::Task, &[AgentKind::Chat, AgentKind::Chat]), None);
+        let s = format_route_decision(
+            &plan(IntentType::Task, &[AgentKind::Chat, AgentKind::Chat]),
+            None,
+        );
         assert_eq!(s, "Agent L → Chat");
     }
 
     #[test]
     fn route_preserves_agent_order() {
-        let s = format_route_decision(&plan(IntentType::Task, &[AgentKind::Search, AgentKind::Shell, AgentKind::Code]), None);
+        let s = format_route_decision(
+            &plan(
+                IntentType::Task,
+                &[AgentKind::Search, AgentKind::Shell, AgentKind::Code],
+            ),
+            None,
+        );
         assert_eq!(s, "Agent L → Search + Shell + Code");
     }
 
@@ -359,10 +468,7 @@ mod tests {
 
     #[test]
     fn route_code_without_scope_shows_plain_code() {
-        let s = format_route_decision(
-            &plan(IntentType::Task, &[AgentKind::Code]),
-            None,
-        );
+        let s = format_route_decision(&plan(IntentType::Task, &[AgentKind::Code]), None);
         assert_eq!(s, "Agent L → Code");
     }
 
@@ -455,12 +561,23 @@ mod tests {
         let text = "```rust\nlet x = 1;\n```";
         let lines = parse_simple_markdown(text);
         // 3 lines: label, code line, closing line
-        assert_eq!(lines.len(), 3, "expected label + 1 code line + closing, got {lines:?}");
+        assert_eq!(
+            lines.len(),
+            3,
+            "expected label + 1 code line + closing, got {lines:?}"
+        );
         // Label line mentions the language
         let label = lines[0].spans[0].content.to_string();
-        assert!(label.contains("rust"), "label should mention language: {label:?}");
+        assert!(
+            label.contains("rust"),
+            "label should mention language: {label:?}"
+        );
         // Code line has distinct styling (not the default white)
-        assert_ne!(lines[1].spans[0].style, Style::default(), "code line should be styled");
+        assert_ne!(
+            lines[1].spans[0].style,
+            Style::default(),
+            "code line should be styled"
+        );
         // Code line content is preserved exactly
         assert_eq!(lines[1].spans[0].content, "let x = 1;");
     }
@@ -496,7 +613,11 @@ mod tests {
         // label line + 1 code line + closing line
         assert_eq!(lines.len(), 3);
         // The code line should be a single raw span, not split on "**"
-        assert_eq!(lines[1].spans.len(), 1, "code line should not parse bold markers");
+        assert_eq!(
+            lines[1].spans.len(),
+            1,
+            "code line should not parse bold markers"
+        );
         assert_eq!(lines[1].spans[0].content, "this **is** raw");
     }
 
@@ -515,7 +636,8 @@ mod tests {
     fn multiple_code_blocks_both_render() {
         let text = "```py\nprint(1)\n```\nmiddle\n```js\nconsole.log(2)\n```";
         let lines = parse_simple_markdown(text);
-        let combined: String = lines.iter()
+        let combined: String = lines
+            .iter()
             .flat_map(|l| l.spans.iter())
             .map(|s| s.content.to_string())
             .collect::<Vec<_>>()
@@ -524,6 +646,86 @@ mod tests {
         assert!(combined.contains("print(1)"), "first block content missing");
         assert!(combined.contains("middle"), "prose between blocks missing");
         assert!(combined.contains("js"), "second block language missing");
-        assert!(combined.contains("console.log(2)"), "second block content missing");
+        assert!(
+            combined.contains("console.log(2)"),
+            "second block content missing"
+        );
+    }
+
+    // ── OSC 8 hyperlink linkification ────────────────────────────────────────
+
+    /// A bare `https://` URL in prose should be wrapped with OSC 8 sequences so
+    /// terminals that support clickable links can render them.
+    #[test]
+    fn bare_url_gets_osc8_linkified() {
+        let lines = parse_simple_markdown("Visit https://example.com for more info");
+        let all_content: String = lines[0]
+            .spans
+            .iter()
+            .map(|s| s.content.as_ref())
+            .collect::<String>();
+        assert!(
+            all_content.contains("\x1b]8;;https://example.com\x1b\\"),
+            "URL should be wrapped with OSC 8 open sequence, got: {all_content:?}"
+        );
+        assert!(
+            all_content.contains("\x1b]8;;\x1b\\"),
+            "URL should be wrapped with OSC 8 close sequence"
+        );
+        // The non-URL text should also be present
+        assert!(all_content.contains("Visit "));
+        assert!(all_content.contains(" for more info"));
+    }
+
+    /// Non-URL text should not be affected by linkification.
+    #[test]
+    fn non_url_prose_unchanged() {
+        let lines = parse_simple_markdown("No URLs here, just text.");
+        let all_content: String = lines[0]
+            .spans
+            .iter()
+            .map(|s| s.content.as_ref())
+            .collect::<String>();
+        assert!(!all_content.contains("\x1b]8;"), "no OSC 8 in plain text");
+        assert_eq!(all_content, "No URLs here, just text.");
+    }
+
+    /// URLs inside bold markers should NOT be linkified (bold is already styled).
+    #[test]
+    fn url_inside_bold_not_linkified() {
+        let lines = parse_simple_markdown("see **https://example.com** for details");
+        let combined: String = lines[0]
+            .spans
+            .iter()
+            .map(|s| s.content.as_ref())
+            .collect::<String>();
+        // The bold span contains the raw URL without OSC 8
+        assert!(combined.contains("https://example.com"));
+        // Bold part should NOT be linkified
+        let bold_spans: Vec<_> = lines[0]
+            .spans
+            .iter()
+            .filter(|s| s.style.add_modifier.contains(Modifier::BOLD))
+            .collect();
+        assert!(!bold_spans.is_empty());
+        assert!(
+            !bold_spans[0].content.contains('\x1b'),
+            "URL inside bold should not have escape sequences"
+        );
+    }
+
+    /// A URL at the end of a line (no trailing text) should still be linkified.
+    #[test]
+    fn url_at_end_of_line_linkified() {
+        let lines = parse_simple_markdown("Source: https://en.wikipedia.org/wiki/France");
+        let all_content: String = lines[0]
+            .spans
+            .iter()
+            .map(|s| s.content.as_ref())
+            .collect::<String>();
+        assert!(
+            all_content.contains("\x1b]8;;https://en.wikipedia.org/wiki/France\x1b\\"),
+            "URL at end of line should be linkified, got: {all_content:?}"
+        );
     }
 }

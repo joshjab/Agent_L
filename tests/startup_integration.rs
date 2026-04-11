@@ -1,6 +1,6 @@
 use agent_l::app::{AppEvent, StartupState};
 use agent_l::config::Config;
-use agent_l::startup::{run_startup_checks, StartupTimings};
+use agent_l::startup::{StartupTimings, run_startup_checks};
 
 use std::time::Duration;
 use tokio::sync::mpsc;
@@ -63,10 +63,26 @@ async fn happy_path_model_already_loaded() {
     run_startup_checks(config, tx, fast_timings()).await;
 
     let states = collect_states(&mut rx);
-    assert!(states.contains(&StartupState::Connecting), "expected Connecting: {:?}", states);
-    assert!(states.contains(&StartupState::CheckingModel), "expected CheckingModel: {:?}", states);
-    assert!(states.contains(&StartupState::LoadingModel), "expected LoadingModel: {:?}", states);
-    assert!(states.contains(&StartupState::Ready), "expected Ready: {:?}", states);
+    assert!(
+        states.contains(&StartupState::Connecting),
+        "expected Connecting: {:?}",
+        states
+    );
+    assert!(
+        states.contains(&StartupState::CheckingModel),
+        "expected CheckingModel: {:?}",
+        states
+    );
+    assert!(
+        states.contains(&StartupState::LoadingModel),
+        "expected LoadingModel: {:?}",
+        states
+    );
+    assert!(
+        states.contains(&StartupState::Ready),
+        "expected Ready: {:?}",
+        states
+    );
 }
 
 #[tokio::test]
@@ -85,10 +101,7 @@ async fn model_loads_after_polling() {
     // First /api/ps call returns empty — register first so it matches first (FIFO)
     Mock::given(method("GET"))
         .and(path("/api/ps"))
-        .respond_with(
-            ResponseTemplate::new(200)
-                .set_body_json(serde_json::json!({"models": []})),
-        )
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({"models": []})))
         .up_to_n_times(1)
         .mount(&server)
         .await;
@@ -110,10 +123,17 @@ async fn model_loads_after_polling() {
     run_startup_checks(config, tx, fast_timings()).await;
 
     let states = collect_states(&mut rx);
-    assert!(states.last() == Some(&StartupState::Ready), "last state should be Ready: {:?}", states);
+    assert!(
+        states.last() == Some(&StartupState::Ready),
+        "last state should be Ready: {:?}",
+        states
+    );
 
     let requests = server.received_requests().await.unwrap();
-    let ps_count = requests.iter().filter(|r| r.url.path() == "/api/ps").count();
+    let ps_count = requests
+        .iter()
+        .filter(|r| r.url.path() == "/api/ps")
+        .count();
     assert!(ps_count >= 2, "expected ≥2 /api/ps calls, got {}", ps_count);
 }
 
@@ -133,7 +153,8 @@ async fn ollama_unreachable() {
     let last = states.last().expect("expected at least one event");
     assert!(
         matches!(last, StartupState::Failed(msg) if msg.contains("Cannot reach Ollama")),
-        "expected Failed with 'Cannot reach Ollama', got {:?}", last
+        "expected Failed with 'Cannot reach Ollama', got {:?}",
+        last
     );
 }
 
@@ -158,14 +179,23 @@ async fn model_not_found() {
 
     let states = collect_states(&mut rx);
     assert!(
-        states.iter().any(|s| matches!(s, StartupState::Failed(msg) if msg.contains("ollama pull"))),
-        "expected Failed with 'ollama pull': {:?}", states
+        states
+            .iter()
+            .any(|s| matches!(s, StartupState::Failed(msg) if msg.contains("ollama pull"))),
+        "expected Failed with 'ollama pull': {:?}",
+        states
     );
 
     // /api/ps should not be called
     let requests = server.received_requests().await.unwrap();
-    let ps_count = requests.iter().filter(|r| r.url.path() == "/api/ps").count();
-    assert_eq!(ps_count, 0, "/api/ps should not be called when model not found");
+    let ps_count = requests
+        .iter()
+        .filter(|r| r.url.path() == "/api/ps")
+        .count();
+    assert_eq!(
+        ps_count, 0,
+        "/api/ps should not be called when model not found"
+    );
 }
 
 #[tokio::test]
@@ -187,12 +217,20 @@ async fn tags_returns_500() {
     let states = collect_states(&mut rx);
     assert!(
         states.iter().any(|s| matches!(s, StartupState::Failed(_))),
-        "expected a Failed state: {:?}", states
+        "expected a Failed state: {:?}",
+        states
     );
 
     let requests = server.received_requests().await.unwrap();
-    let tags_count = requests.iter().filter(|r| r.url.path() == "/api/tags").count();
-    assert_eq!(tags_count, 2, "expected exactly 2 /api/tags calls, got {}", tags_count);
+    let tags_count = requests
+        .iter()
+        .filter(|r| r.url.path() == "/api/tags")
+        .count();
+    assert_eq!(
+        tags_count, 2,
+        "expected exactly 2 /api/tags calls, got {}",
+        tags_count
+    );
 }
 
 #[tokio::test]
@@ -211,10 +249,7 @@ async fn load_timeout_sends_ready() {
     // /api/ps always returns empty — model never loads
     Mock::given(method("GET"))
         .and(path("/api/ps"))
-        .respond_with(
-            ResponseTemplate::new(200)
-                .set_body_json(serde_json::json!({"models": []})),
-        )
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({"models": []})))
         .mount(&server)
         .await;
 
@@ -227,7 +262,8 @@ async fn load_timeout_sends_ready() {
     let states = collect_states(&mut rx);
     assert!(
         states.last() == Some(&StartupState::Ready),
-        "timeout should send Ready, got {:?}", states
+        "timeout should send Ready, got {:?}",
+        states
     );
 }
 
@@ -249,8 +285,11 @@ async fn tags_invalid_json() {
 
     let states = collect_states(&mut rx);
     assert!(
-        states.iter().any(|s| matches!(s, StartupState::Failed(msg) if msg.contains("Cannot reach Ollama"))),
-        "expected Failed after all retries, got {:?}", states
+        states
+            .iter()
+            .any(|s| matches!(s, StartupState::Failed(msg) if msg.contains("Cannot reach Ollama"))),
+        "expected Failed after all retries, got {:?}",
+        states
     );
 }
 
@@ -292,10 +331,14 @@ async fn connecting_event_on_each_retry() {
     run_startup_checks(config, tx, fast_timings_3()).await;
 
     let states = collect_states(&mut rx);
-    let connecting_count = states.iter().filter(|s| **s == StartupState::Connecting).count();
+    let connecting_count = states
+        .iter()
+        .filter(|s| **s == StartupState::Connecting)
+        .count();
     assert!(
         connecting_count >= 3,
-        "expected ≥3 Connecting events, got {}", connecting_count
+        "expected ≥3 Connecting events, got {}",
+        connecting_count
     );
 }
 
@@ -305,10 +348,7 @@ async fn tags_empty_models_array() {
 
     Mock::given(method("GET"))
         .and(path("/api/tags"))
-        .respond_with(
-            ResponseTemplate::new(200)
-                .set_body_json(serde_json::json!({"models": []})),
-        )
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({"models": []})))
         .mount(&server)
         .await;
 
@@ -320,8 +360,11 @@ async fn tags_empty_models_array() {
 
     let states = collect_states(&mut rx);
     assert!(
-        states.iter().any(|s| matches!(s, StartupState::Failed(msg) if msg.contains("not found"))),
-        "expected Failed with 'not found': {:?}", states
+        states
+            .iter()
+            .any(|s| matches!(s, StartupState::Failed(msg) if msg.contains("not found"))),
+        "expected Failed with 'not found': {:?}",
+        states
     );
 }
 
@@ -331,10 +374,7 @@ async fn tags_null_models_field() {
 
     Mock::given(method("GET"))
         .and(path("/api/tags"))
-        .respond_with(
-            ResponseTemplate::new(200)
-                .set_body_json(serde_json::json!({"models": null})),
-        )
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({"models": null})))
         .mount(&server)
         .await;
 
@@ -346,7 +386,10 @@ async fn tags_null_models_field() {
 
     let states = collect_states(&mut rx);
     assert!(
-        states.iter().any(|s| matches!(s, StartupState::Failed(msg) if msg.contains("not found"))),
-        "expected Failed with 'not found': {:?}", states
+        states
+            .iter()
+            .any(|s| matches!(s, StartupState::Failed(msg) if msg.contains("not found"))),
+        "expected Failed with 'not found': {:?}",
+        states
     );
 }

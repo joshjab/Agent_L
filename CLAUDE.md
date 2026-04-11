@@ -29,7 +29,22 @@ cargo test --test ollama_integration
 
 # Run with output visible
 cargo test -- --nocapture
+
+# Run live tests (requires Ollama running)
+cargo test --test live_pipeline -- --ignored --nocapture
 ```
+
+## Pre-commit hook
+
+`.githooks/pre-commit` runs the fast suite on every commit and the live suite
+when Ollama is reachable. Activate once per clone:
+
+```bash
+git config core.hooksPath .githooks
+```
+
+The hook skips live tests (with a warning) if Ollama is not running — but live
+tests must pass before merging any milestone to `main`.
 
 ## Architecture
 

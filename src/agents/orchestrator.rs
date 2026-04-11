@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
-use crate::agents::{schema::ParseError, Agent};
+use crate::agents::{Agent, schema::ParseError};
 
 /// The high-level category of what the user wants.
 ///
@@ -81,14 +81,14 @@ impl TaskPlan {
             });
         }
         for (i, step) in self.steps.iter().enumerate() {
-            if let Some(dep) = step.depends_on {
-                if dep >= i {
-                    return Err(ParseError {
-                        message: format!(
-                            "step {i} has invalid depends_on={dep}; depends_on must refer to an earlier step"
-                        ),
-                    });
-                }
+            if let Some(dep) = step.depends_on
+                && dep >= i
+            {
+                return Err(ParseError {
+                    message: format!(
+                        "step {i} has invalid depends_on={dep}; depends_on must refer to an earlier step"
+                    ),
+                });
             }
         }
         Ok(())
@@ -133,13 +133,17 @@ classify the user's intent and output a task plan as JSON.
 
 intent_type rules:
 - Factual: any question about real-world facts, current events, prices, or live data \
-  → route to Search; NEVER answer from your own knowledge
+  → route to Search (agent=Search); NEVER answer from your own knowledge. \
+  This also includes searching, grepping, or finding content within local project files \
+  (e.g. 'search my project files for X', 'find uses of function Y', 'grep for pattern Z') \
+  → use agent=Search with local_search tool, NOT agent=Code.
 - Conversational: greetings, opinions, casual back-and-forth → route to Chat
 - Creative: prose writing, brainstorming, summarizing NON-CODE content → route to Chat. \
   IMPORTANT: writing or generating CODE is NOT Creative — it is Task with agent=Code
 - Task: any request to write, generate, create, or modify code or scripts; \
-  running commands; scheduling; file operations → route to the relevant specialist. \
-  Use agent=Code for ALL code/script generation and modification requests.
+  running commands; scheduling → route to the relevant specialist. \
+  Use agent=Code for ALL code/script generation and modification requests. \
+  IMPORTANT: searching/grepping for content in files is Factual (agent=Search), NOT Task.
 
 Output exactly one JSON object matching the schema. Max 5 steps. \
 Use depends_on (0-indexed) only when a later step needs the output of an earlier step.";
@@ -151,7 +155,9 @@ pub struct OrchestratorAgent {
 
 impl OrchestratorAgent {
     pub fn new(model: impl Into<String>) -> Self {
-        Self { model: model.into() }
+        Self {
+            model: model.into(),
+        }
     }
 }
 
@@ -166,9 +172,7 @@ impl Agent for OrchestratorAgent {
             context
         };
 
-        let mut messages: Vec<Value> = vec![
-            json!({ "role": "system", "content": SYSTEM_PROMPT }),
-        ];
+        let mut messages: Vec<Value> = vec![json!({ "role": "system", "content": SYSTEM_PROMPT })];
 
         messages.extend_from_slice(recent);
 
@@ -195,21 +199,19 @@ impl Agent for OrchestratorAgent {
     fn parse(&self, response: &str) -> Result<TaskPlan, ParseError> {
         // Ollama wraps the assistant reply in {"message": {"content": "..."}}
         let envelope: Value = serde_json::from_str(response).map_err(|e| ParseError {
-            message: format!(
-                "Ollama response is not valid JSON: {e} (raw: {response:?})"
-            ),
+            message: format!("Ollama response is not valid JSON: {e} (raw: {response:?})"),
         })?;
 
-        let content = envelope["message"]["content"].as_str().ok_or_else(|| ParseError {
-            message: format!(
-                "Ollama response missing message.content string (got: {envelope})"
-            ),
-        })?;
+        let content = envelope["message"]["content"]
+            .as_str()
+            .ok_or_else(|| ParseError {
+                message: format!(
+                    "Ollama response missing message.content string (got: {envelope})"
+                ),
+            })?;
 
         let plan: TaskPlan = serde_json::from_str(content).map_err(|e| ParseError {
-            message: format!(
-                "task plan JSON is invalid: {e} (content: {content:?})"
-            ),
+            message: format!("task plan JSON is invalid: {e} (content: {content:?})"),
         })?;
 
         plan.validate()?;
@@ -269,7 +271,11 @@ mod tests {
     fn single_step(agent: AgentKind) -> TaskPlan {
         TaskPlan {
             intent_type: IntentType::Conversational,
-            steps: vec![PlanStep { agent, task: "do something".into(), depends_on: None }],
+            steps: vec![PlanStep {
+                agent,
+                task: "do something".into(),
+                depends_on: None,
+            }],
         }
     }
 
@@ -278,8 +284,16 @@ mod tests {
         let plan = TaskPlan {
             intent_type: IntentType::Task,
             steps: vec![
-                PlanStep { agent: AgentKind::Search, task: "find info".into(), depends_on: None },
-                PlanStep { agent: AgentKind::Chat,   task: "summarise".into(), depends_on: Some(0) },
+                PlanStep {
+                    agent: AgentKind::Search,
+                    task: "find info".into(),
+                    depends_on: None,
+                },
+                PlanStep {
+                    agent: AgentKind::Chat,
+                    task: "summarise".into(),
+                    depends_on: Some(0),
+                },
             ],
         };
         let json = serde_json::to_string(&plan).unwrap();
@@ -289,9 +303,16 @@ mod tests {
 
     #[test]
     fn plan_step_omits_depends_on_when_none() {
-        let step = PlanStep { agent: AgentKind::Chat, task: "hi".into(), depends_on: None };
+        let step = PlanStep {
+            agent: AgentKind::Chat,
+            task: "hi".into(),
+            depends_on: None,
+        };
         let json = serde_json::to_string(&step).unwrap();
-        assert!(!json.contains("depends_on"), "depends_on should be omitted when None");
+        assert!(
+            !json.contains("depends_on"),
+            "depends_on should be omitted when None"
+        );
     }
 
     #[test]
@@ -302,15 +323,25 @@ mod tests {
     #[test]
     fn validate_accepts_max_steps_exactly() {
         let steps = (0..MAX_PLAN_STEPS)
-            .map(|_| PlanStep { agent: AgentKind::Chat, task: "x".into(), depends_on: None })
+            .map(|_| PlanStep {
+                agent: AgentKind::Chat,
+                task: "x".into(),
+                depends_on: None,
+            })
             .collect();
-        let plan = TaskPlan { intent_type: IntentType::Task, steps };
+        let plan = TaskPlan {
+            intent_type: IntentType::Task,
+            steps,
+        };
         assert!(plan.validate().is_ok());
     }
 
     #[test]
     fn validate_rejects_empty_steps() {
-        let plan = TaskPlan { intent_type: IntentType::Factual, steps: vec![] };
+        let plan = TaskPlan {
+            intent_type: IntentType::Factual,
+            steps: vec![],
+        };
         let err = plan.validate().unwrap_err();
         assert!(err.message.contains("at least one step"));
     }
@@ -318,12 +349,25 @@ mod tests {
     #[test]
     fn validate_rejects_more_than_max_steps() {
         let steps = (0..=MAX_PLAN_STEPS)
-            .map(|_| PlanStep { agent: AgentKind::Chat, task: "x".into(), depends_on: None })
+            .map(|_| PlanStep {
+                agent: AgentKind::Chat,
+                task: "x".into(),
+                depends_on: None,
+            })
             .collect();
-        let plan = TaskPlan { intent_type: IntentType::Task, steps };
+        let plan = TaskPlan {
+            intent_type: IntentType::Task,
+            steps,
+        };
         let err = plan.validate().unwrap_err();
-        assert!(err.message.contains("maximum"), "error should mention 'maximum'");
-        assert!(err.message.contains("break"), "error should ask user to break request up");
+        assert!(
+            err.message.contains("maximum"),
+            "error should mention 'maximum'"
+        );
+        assert!(
+            err.message.contains("break"),
+            "error should ask user to break request up"
+        );
     }
 
     #[test]
@@ -331,8 +375,16 @@ mod tests {
         let plan = TaskPlan {
             intent_type: IntentType::Task,
             steps: vec![
-                PlanStep { agent: AgentKind::Search, task: "step 0".into(), depends_on: None },
-                PlanStep { agent: AgentKind::Chat,   task: "step 1".into(), depends_on: Some(0) },
+                PlanStep {
+                    agent: AgentKind::Search,
+                    task: "step 0".into(),
+                    depends_on: None,
+                },
+                PlanStep {
+                    agent: AgentKind::Chat,
+                    task: "step 1".into(),
+                    depends_on: Some(0),
+                },
             ],
         };
         assert!(plan.validate().is_ok());
@@ -342,9 +394,11 @@ mod tests {
     fn validate_rejects_self_referencing_depends_on() {
         let plan = TaskPlan {
             intent_type: IntentType::Task,
-            steps: vec![
-                PlanStep { agent: AgentKind::Chat, task: "step 0".into(), depends_on: Some(0) },
-            ],
+            steps: vec![PlanStep {
+                agent: AgentKind::Chat,
+                task: "step 0".into(),
+                depends_on: Some(0),
+            }],
         };
         let err = plan.validate().unwrap_err();
         assert!(err.message.contains("invalid depends_on"));
@@ -355,8 +409,16 @@ mod tests {
         let plan = TaskPlan {
             intent_type: IntentType::Task,
             steps: vec![
-                PlanStep { agent: AgentKind::Search, task: "step 0".into(), depends_on: Some(1) },
-                PlanStep { agent: AgentKind::Chat,   task: "step 1".into(), depends_on: None },
+                PlanStep {
+                    agent: AgentKind::Search,
+                    task: "step 0".into(),
+                    depends_on: Some(1),
+                },
+                PlanStep {
+                    agent: AgentKind::Chat,
+                    task: "step 1".into(),
+                    depends_on: None,
+                },
             ],
         };
         let err = plan.validate().unwrap_err();
@@ -380,7 +442,10 @@ mod tests {
         let req = agent().prompt(&[], None);
         assert_eq!(req["model"], "test-model");
         assert_eq!(req["stream"], false);
-        assert!(req["format"].is_object(), "format field should be a JSON schema object");
+        assert!(
+            req["format"].is_object(),
+            "format field should be a JSON schema object"
+        );
     }
 
     #[test]
@@ -389,7 +454,10 @@ mod tests {
         let first = &req["messages"][0];
         assert_eq!(first["role"], "system");
         let content = first["content"].as_str().unwrap();
-        assert!(content.contains("Agent L"), "system prompt should mention Agent L");
+        assert!(
+            content.contains("Agent L"),
+            "system prompt should mention Agent L"
+        );
     }
 
     #[test]
@@ -418,14 +486,22 @@ mod tests {
 
     #[test]
     fn prompt_appends_error_feedback_on_retry() {
-        let err = ParseError { message: "missing steps field".into() };
+        let err = ParseError {
+            message: "missing steps field".into(),
+        };
         let req = agent().prompt(&[], Some(&err));
         let messages = req["messages"].as_array().unwrap();
         let last = messages.last().unwrap();
         assert_eq!(last["role"], "user");
         let content = last["content"].as_str().unwrap();
-        assert!(content.contains("missing steps field"), "error text should be embedded in retry message");
-        assert!(content.contains("invalid"), "retry message should say the response was invalid");
+        assert!(
+            content.contains("missing steps field"),
+            "error text should be embedded in retry message"
+        );
+        assert!(
+            content.contains("invalid"),
+            "retry message should say the response was invalid"
+        );
     }
 
     #[test]
@@ -443,7 +519,11 @@ mod tests {
     fn parse_succeeds_on_valid_envelope() {
         let plan = TaskPlan {
             intent_type: IntentType::Conversational,
-            steps: vec![PlanStep { agent: AgentKind::Chat, task: "reply".into(), depends_on: None }],
+            steps: vec![PlanStep {
+                agent: AgentKind::Chat,
+                task: "reply".into(),
+                depends_on: None,
+            }],
         };
         let raw = ollama_envelope(&plan);
         assert_eq!(agent().parse(&raw).unwrap(), plan);
@@ -452,22 +532,37 @@ mod tests {
     #[test]
     fn parse_fails_when_response_is_not_json() {
         let err = agent().parse("not json at all").unwrap_err();
-        assert!(err.message.contains("not valid JSON"), "got: {}", err.message);
-        assert!(err.message.contains("not json at all"), "raw input should appear in error");
+        assert!(
+            err.message.contains("not valid JSON"),
+            "got: {}",
+            err.message
+        );
+        assert!(
+            err.message.contains("not json at all"),
+            "raw input should appear in error"
+        );
     }
 
     #[test]
     fn parse_fails_when_message_content_is_missing() {
         let raw = json!({ "message": { "role": "assistant" } }).to_string();
         let err = agent().parse(&raw).unwrap_err();
-        assert!(err.message.contains("missing message.content"), "got: {}", err.message);
+        assert!(
+            err.message.contains("missing message.content"),
+            "got: {}",
+            err.message
+        );
     }
 
     #[test]
     fn parse_fails_when_envelope_has_no_message_key() {
         let raw = json!({ "done": true }).to_string();
         let err = agent().parse(&raw).unwrap_err();
-        assert!(err.message.contains("missing message.content"), "got: {}", err.message);
+        assert!(
+            err.message.contains("missing message.content"),
+            "got: {}",
+            err.message
+        );
     }
 
     #[test]
@@ -476,11 +571,20 @@ mod tests {
             "message": {
                 "content": r#"{"intent_type":"Bogus","steps":[{"agent":"Chat","task":"hi"}]}"#
             }
-        }).to_string();
+        })
+        .to_string();
         let err = agent().parse(&raw).unwrap_err();
-        assert!(err.message.contains("task plan JSON is invalid"), "got: {}", err.message);
+        assert!(
+            err.message.contains("task plan JSON is invalid"),
+            "got: {}",
+            err.message
+        );
         // The bad content should be echoed so the caller knows what the model returned
-        assert!(err.message.contains("Bogus"), "raw content should appear in error: {}", err.message);
+        assert!(
+            err.message.contains("Bogus"),
+            "raw content should appear in error: {}",
+            err.message
+        );
     }
 
     #[test]
@@ -488,9 +592,14 @@ mod tests {
         // No "steps" field
         let raw = json!({
             "message": { "content": r#"{"intent_type":"Chat"}"# }
-        }).to_string();
+        })
+        .to_string();
         let err = agent().parse(&raw).unwrap_err();
-        assert!(err.message.contains("task plan JSON is invalid"), "got: {}", err.message);
+        assert!(
+            err.message.contains("task plan JSON is invalid"),
+            "got: {}",
+            err.message
+        );
     }
 
     #[test]
@@ -498,8 +607,13 @@ mod tests {
         // Valid JSON structure but empty steps — should fail TaskPlan::validate()
         let raw = json!({
             "message": { "content": r#"{"intent_type":"Factual","steps":[]}"# }
-        }).to_string();
+        })
+        .to_string();
         let err = agent().parse(&raw).unwrap_err();
-        assert!(err.message.contains("at least one step"), "got: {}", err.message);
+        assert!(
+            err.message.contains("at least one step"),
+            "got: {}",
+            err.message
+        );
     }
 }

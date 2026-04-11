@@ -29,11 +29,15 @@ async fn single_chunk_produces_token_and_done() {
 
     let (tx, mut rx) = mpsc::unbounded_channel();
     let url = format!("{}/api/chat", server.uri());
-    fetch_ollama_stream(&url, "llama3", vec![], tx).await.unwrap();
+    fetch_ollama_stream(&url, "llama3", vec![], tx)
+        .await
+        .unwrap();
 
     let events = collect_events(&mut rx);
     assert!(
-        events.iter().any(|e| matches!(e, AppEvent::Token(t) if t == "Hello")),
+        events
+            .iter()
+            .any(|e| matches!(e, AppEvent::Token(t) if t == "Hello")),
         "expected Token(\"Hello\")"
     );
     assert!(
@@ -54,11 +58,15 @@ async fn http_404_sends_error_token_and_done() {
 
     let (tx, mut rx) = mpsc::unbounded_channel();
     let url = format!("{}/api/chat", server.uri());
-    fetch_ollama_stream(&url, "llama3", vec![], tx).await.unwrap();
+    fetch_ollama_stream(&url, "llama3", vec![], tx)
+        .await
+        .unwrap();
 
     let events = collect_events(&mut rx);
     assert!(
-        events.iter().any(|e| matches!(e, AppEvent::Token(t) if t.contains("HTTP Error:"))),
+        events
+            .iter()
+            .any(|e| matches!(e, AppEvent::Token(t) if t.contains("HTTP Error:"))),
         "expected Token with 'HTTP Error:'"
     );
     assert!(events.iter().any(|e| matches!(e, AppEvent::StreamDone)));
@@ -76,11 +84,15 @@ async fn http_500_sends_error_token_and_done() {
 
     let (tx, mut rx) = mpsc::unbounded_channel();
     let url = format!("{}/api/chat", server.uri());
-    fetch_ollama_stream(&url, "llama3", vec![], tx).await.unwrap();
+    fetch_ollama_stream(&url, "llama3", vec![], tx)
+        .await
+        .unwrap();
 
     let events = collect_events(&mut rx);
     assert!(
-        events.iter().any(|e| matches!(e, AppEvent::Token(t) if t.contains("HTTP Error:"))),
+        events
+            .iter()
+            .any(|e| matches!(e, AppEvent::Token(t) if t.contains("HTTP Error:"))),
         "expected Token with 'HTTP Error:'"
     );
     assert!(events.iter().any(|e| matches!(e, AppEvent::StreamDone)));
@@ -98,11 +110,15 @@ async fn invalid_json_body_sends_parse_error() {
 
     let (tx, mut rx) = mpsc::unbounded_channel();
     let url = format!("{}/api/chat", server.uri());
-    fetch_ollama_stream(&url, "llama3", vec![], tx).await.unwrap();
+    fetch_ollama_stream(&url, "llama3", vec![], tx)
+        .await
+        .unwrap();
 
     let events = collect_events(&mut rx);
     assert!(
-        events.iter().any(|e| matches!(e, AppEvent::Token(t) if t.contains("[Parse Error on:"))),
+        events
+            .iter()
+            .any(|e| matches!(e, AppEvent::Token(t) if t.contains("[Parse Error on:"))),
         "expected Token with '[Parse Error on:'"
     );
     assert!(events.iter().any(|e| matches!(e, AppEvent::StreamDone)));
@@ -123,7 +139,9 @@ async fn missing_content_field_no_token() {
 
     let (tx, mut rx) = mpsc::unbounded_channel();
     let url = format!("{}/api/chat", server.uri());
-    fetch_ollama_stream(&url, "llama3", vec![], tx).await.unwrap();
+    fetch_ollama_stream(&url, "llama3", vec![], tx)
+        .await
+        .unwrap();
 
     let events = collect_events(&mut rx);
     assert!(
@@ -150,11 +168,15 @@ async fn empty_content_field_does_not_send_token() {
 
     let (tx, mut rx) = mpsc::unbounded_channel();
     let url = format!("{}/api/chat", server.uri());
-    fetch_ollama_stream(&url, "llama3", vec![], tx).await.unwrap();
+    fetch_ollama_stream(&url, "llama3", vec![], tx)
+        .await
+        .unwrap();
 
     let events = collect_events(&mut rx);
     assert!(
-        !events.iter().any(|e| matches!(e, AppEvent::Token(t) if t.is_empty())),
+        !events
+            .iter()
+            .any(|e| matches!(e, AppEvent::Token(t) if t.is_empty())),
         "empty-content chunks must not produce Token(\"\") events"
     );
     assert!(events.iter().any(|e| matches!(e, AppEvent::StreamDone)));
@@ -186,7 +208,11 @@ async fn done_chunk_emits_token_stats() {
             None
         }
     });
-    assert_eq!(stats, Some((42, 7)), "expected TokenStats(42, 7) from done chunk");
+    assert_eq!(
+        stats,
+        Some((42, 7)),
+        "expected TokenStats(42, 7) from done chunk"
+    );
 }
 
 #[tokio::test]
@@ -205,7 +231,9 @@ async fn request_payload_correct() {
     let messages = vec![serde_json::json!({"role": "user", "content": "hello"})];
     let (tx, _rx) = mpsc::unbounded_channel();
     let url = format!("{}/api/chat", server.uri());
-    fetch_ollama_stream(&url, "llama3", messages, tx).await.unwrap();
+    fetch_ollama_stream(&url, "llama3", messages, tx)
+        .await
+        .unwrap();
 
     let requests = server.received_requests().await.unwrap();
     assert_eq!(requests.len(), 1);
@@ -231,7 +259,9 @@ async fn empty_messages_vec_ok() {
     let (tx, mut rx) = mpsc::unbounded_channel();
     let url = format!("{}/api/chat", server.uri());
     // Should not panic with empty messages
-    fetch_ollama_stream(&url, "llama3", vec![], tx).await.unwrap();
+    fetch_ollama_stream(&url, "llama3", vec![], tx)
+        .await
+        .unwrap();
 
     let events = collect_events(&mut rx);
     assert!(events.iter().any(|e| matches!(e, AppEvent::StreamDone)));
@@ -255,7 +285,10 @@ async fn dropped_receiver_does_not_panic() {
 
     let url = format!("{}/api/chat", server.uri());
     let result = fetch_ollama_stream(&url, "llama3", vec![], tx).await;
-    assert!(result.is_ok(), "should return Ok even with dropped receiver");
+    assert!(
+        result.is_ok(),
+        "should return Ok even with dropped receiver"
+    );
 }
 
 #[tokio::test]

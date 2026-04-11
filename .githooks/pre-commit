@@ -1,0 +1,52 @@
+#!/usr/bin/env bash
+# pre-commit hook for Agent-L
+#
+# Always runs:   cargo check + clippy + unit/integration tests + fmt
+# When Ollama is reachable: also runs the live_pipeline tests (#[ignore])
+#
+# Activate once per clone:
+#   git config core.hooksPath .githooks
+#
+# To skip (emergency only):
+#   git commit --no-verify
+
+set -euo pipefail
+
+CARGO="${HOME}/.cargo/bin/cargo"
+RED='\033[0;31m'
+YELLOW='\033[1;33m'
+GREEN='\033[0;32m'
+NC='\033[0m' # no colour
+
+fail() { echo -e "${RED}[pre-commit] FAILED: $*${NC}" >&2; exit 1; }
+warn() { echo -e "${YELLOW}[pre-commit] WARNING: $*${NC}" >&2; }
+ok()   { echo -e "${GREEN}[pre-commit] $*${NC}"; }
+
+# ── 1. Fast suite (always required) ─────────────────────────────────────────
+
+echo "[pre-commit] Running fast suite (check / clippy / test / fmt)…"
+
+"$CARGO" check --quiet           || fail "cargo check"
+"$CARGO" clippy -- -D warnings   || fail "cargo clippy"
+"$CARGO" test                    || fail "cargo test"
+"$CARGO" fmt --check             || fail "cargo fmt --check  (run: cargo fmt)"
+
+ok "Fast suite passed."
+
+# ── 2. Live suite (runs when Ollama is reachable) ────────────────────────────
+
+OLLAMA_HOST="${OLLAMA_HOST:-localhost}"
+OLLAMA_PORT="${OLLAMA_PORT:-11434}"
+
+echo "[pre-commit] Checking Ollama at ${OLLAMA_HOST}:${OLLAMA_PORT}…"
+
+if curl -sf --max-time 2 "http://${OLLAMA_HOST}:${OLLAMA_PORT}/api/tags" > /dev/null 2>&1; then
+    ok "Ollama reachable — running live_pipeline tests…"
+    "$CARGO" test --test live_pipeline -- --ignored \
+        || fail "live_pipeline tests failed (run with --nocapture to debug)"
+    ok "Live suite passed."
+else
+    warn "Ollama not reachable at ${OLLAMA_HOST}:${OLLAMA_PORT} — skipping live tests."
+    warn "Start Ollama and run manually before merging to main:"
+    warn "  cargo test --test live_pipeline -- --ignored --nocapture"
+fi

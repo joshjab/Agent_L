@@ -27,9 +27,11 @@ pub fn require_field<'a>(value: &'a Value, field: &str) -> Result<&'a Value, Par
 /// Used by future specialist agents (M7+) for structured response parsing.
 #[allow(dead_code)]
 pub fn require_str<'a>(value: &'a Value, field: &str) -> Result<&'a str, ParseError> {
-    require_field(value, field)?.as_str().ok_or_else(|| ParseError {
-        message: format!("field '{field}' is not a string"),
-    })
+    require_field(value, field)?
+        .as_str()
+        .ok_or_else(|| ParseError {
+            message: format!("field '{field}' is not a string"),
+        })
 }
 
 #[cfg(test)]

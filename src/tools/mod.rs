@@ -1,5 +1,6 @@
 pub mod claude_code;
 pub mod executor;
+pub mod search_tools;
 
 use serde_json::Value;
 
@@ -39,8 +40,12 @@ pub mod test_tools {
     }
 
     impl Tool for AlwaysOkTool {
-        fn name(&self) -> &str { self.name }
-        fn description(&self) -> &str { "always succeeds" }
+        fn name(&self) -> &str {
+            self.name
+        }
+        fn description(&self) -> &str {
+            "always succeeds"
+        }
         fn schema(&self) -> Value {
             json!({"type": "object", "properties": {"input": {"type": "string"}}, "required": []})
         }
@@ -53,8 +58,12 @@ pub mod test_tools {
     pub struct AlwaysFailTool;
 
     impl Tool for AlwaysFailTool {
-        fn name(&self) -> &str { "always_fail" }
-        fn description(&self) -> &str { "always fails" }
+        fn name(&self) -> &str {
+            "always_fail"
+        }
+        fn description(&self) -> &str {
+            "always fails"
+        }
         fn schema(&self) -> Value {
             json!({"type": "object", "properties": {}, "required": []})
         }

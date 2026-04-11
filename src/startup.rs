@@ -47,12 +47,9 @@ pub async fn run_startup_checks(
 
         match client.get(&tags_url).send().await {
             Ok(res) if res.status().is_success() => {
-                match res.json::<serde_json::Value>().await {
-                    Ok(body) => {
-                        response_body = Some(body);
-                        break;
-                    }
-                    Err(_) => {}
+                if let Ok(body) = res.json::<serde_json::Value>().await {
+                    response_body = Some(body);
+                    break;
                 }
             }
             _ => {}
@@ -79,9 +76,11 @@ pub async fn run_startup_checks(
     let _ = tx.send(AppEvent::StartupUpdate(StartupState::CheckingModel));
 
     let models = body["models"].as_array();
-    let model_found = models.map_or(false, |arr| {
+    let model_found = models.is_some_and(|arr| {
         arr.iter().any(|m| {
-            m["name"].as_str().map_or(false, |name| model_matches(name, &config.model_name))
+            m["name"]
+                .as_str()
+                .is_some_and(|name| model_matches(name, &config.model_name))
         })
     });
 
@@ -102,9 +101,11 @@ pub async fn run_startup_checks(
         match client.get(&ps_url).send().await {
             Ok(res) if res.status().is_success() => {
                 if let Ok(ps_body) = res.json::<serde_json::Value>().await {
-                    let loaded = ps_body["models"].as_array().map_or(false, |arr| {
+                    let loaded = ps_body["models"].as_array().is_some_and(|arr| {
                         arr.iter().any(|m| {
-                            m["name"].as_str().map_or(false, |name| model_matches(name, &config.model_name))
+                            m["name"]
+                                .as_str()
+                                .is_some_and(|name| model_matches(name, &config.model_name))
                         })
                     });
                     if loaded {

@@ -245,7 +245,13 @@ mod tests {
             .unwrap();
 
         let tokens: Vec<String> = std::iter::from_fn(|| rx.try_recv().ok())
-            .filter_map(|e| if let AppEvent::Token(t) = e { Some(t) } else { None })
+            .filter_map(|e| {
+                if let AppEvent::Token(t) = e {
+                    Some(t)
+                } else {
+                    None
+                }
+            })
             .collect();
 
         assert!(!tokens.is_empty(), "expected at least one token");

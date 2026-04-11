@@ -4,7 +4,10 @@ use crate::agents::orchestrator::TaskPlan;
 use crate::agents::specialists::code::TaskScope;
 use crate::startup::StartupTimings;
 
-pub enum Role { User, Assistant }
+pub enum Role {
+    User,
+    Assistant,
+}
 
 pub struct ChatMessage {
     pub role: Role,
@@ -30,14 +33,23 @@ pub enum AppEvent {
     ScopeDecision(TaskScope),
     /// A specialist is about to invoke a tool. (M10: trace panel)
     #[allow(dead_code)]
-    ToolCall { name: String, args: serde_json::Value },
+    ToolCall {
+        name: String,
+        args: serde_json::Value,
+    },
     /// A tool has returned a result. (M10: trace panel)
     #[allow(dead_code)]
-    ToolResult { name: String, result: String },
+    ToolResult {
+        name: String,
+        result: String,
+    },
     /// Token-usage stats from one Ollama call (prompt tokens in, generated tokens out).
     /// `generated` is reserved for the M10 token budget display.
     #[allow(dead_code)]
-    TokenStats { prompt: u32, generated: u32 },
+    TokenStats {
+        prompt: u32,
+        generated: u32,
+    },
 }
 
 pub struct App {
@@ -69,6 +81,12 @@ pub struct App {
     rx: mpsc::UnboundedReceiver<AppEvent>,
 }
 
+impl Default for App {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl App {
     pub fn new() -> Self {
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
@@ -77,7 +95,12 @@ impl App {
         let startup_tx = tx.clone();
         let startup_config = crate::config::Config::from_env();
         tokio::spawn(async move {
-            crate::startup::run_startup_checks(startup_config, startup_tx, StartupTimings::default()).await;
+            crate::startup::run_startup_checks(
+                startup_config,
+                startup_tx,
+                StartupTimings::default(),
+            )
+            .await;
         });
 
         Self {
@@ -140,19 +163,29 @@ impl App {
 
         let user_text = self.input.clone();
         // 1. Push user message
-        self.history.push(ChatMessage { role: Role::User, content: user_text });
+        self.history.push(ChatMessage {
+            role: Role::User,
+            content: user_text,
+        });
 
         // 2. Serialize NOW — placeholder not yet added.
         //    This slice is also the context Agent L receives for classification.
-        let raw_messages: Vec<serde_json::Value> = self.history.iter().map(|m| {
-            serde_json::json!({
-                "role": match m.role { Role::User => "user", Role::Assistant => "assistant" },
-                "content": m.content
+        let raw_messages: Vec<serde_json::Value> = self
+            .history
+            .iter()
+            .map(|m| {
+                serde_json::json!({
+                    "role": match m.role { Role::User => "user", Role::Assistant => "assistant" },
+                    "content": m.content
+                })
             })
-        }).collect();
+            .collect();
 
         // 3. Push empty assistant placeholder for streaming tokens to fill
-        self.history.push(ChatMessage { role: Role::Assistant, content: String::new() });
+        self.history.push(ChatMessage {
+            role: Role::Assistant,
+            content: String::new(),
+        });
 
         self.input.clear();
         self.is_loading = true;
@@ -160,13 +193,23 @@ impl App {
         let chat_url = format!("{}/api/chat", self.base_url);
         let model = self.model_name.clone();
         // Count user messages so far (for goal-reminder injection).
-        let turn_count = self.history.iter().filter(|m| matches!(m.role, Role::User)).count();
+        let turn_count = self
+            .history
+            .iter()
+            .filter(|m| matches!(m.role, Role::User))
+            .count();
         // Capture the most recent context size so the compressor can use the
         // real token count rather than the char/4 estimate.
-        let current_ctx = if self.context_tokens > 0 { Some(self.context_tokens) } else { None };
+        let current_ctx = if self.context_tokens > 0 {
+            Some(self.context_tokens)
+        } else {
+            None
+        };
 
         tokio::spawn(async move {
-            use crate::agents::orchestrator::{AgentKind, IntentType, OrchestratorAgent, PlanStep, TaskPlan};
+            use crate::agents::orchestrator::{
+                AgentKind, IntentType, OrchestratorAgent, PlanStep, TaskPlan,
+            };
 
             let persona = crate::agents::persona::Persona::new();
             let compressor = crate::agents::compression::Compressor::new();
@@ -219,10 +262,15 @@ impl App {
 
             // Step C: run the specialist step runner.
             // StreamDone is sent by run_plan after all steps complete.
-            let working_dir = std::env::current_dir()
-                .unwrap_or_else(|_| std::path::PathBuf::from("."));
+            let working_dir =
+                std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
             let _ = crate::agents::specialists::run_plan(
-                &plan, &messages, &model, &chat_url, &working_dir, tx,
+                &plan,
+                &messages,
+                &model,
+                &chat_url,
+                &working_dir,
+                tx,
             )
             .await;
         });
@@ -238,13 +286,19 @@ impl App {
                         self.token_count += 1;
                     }
                 }
-                AppEvent::StreamDone => { self.is_loading = false; }
-                AppEvent::StartupUpdate(state) => { self.startup_state = state; }
+                AppEvent::StreamDone => {
+                    self.is_loading = false;
+                }
+                AppEvent::StartupUpdate(state) => {
+                    self.startup_state = state;
+                }
                 AppEvent::RouteDecision(plan) => {
                     self.route_decision = Some(plan);
                     self.code_scope = None; // reset scope for each new message
                 }
-                AppEvent::ScopeDecision(scope) => { self.code_scope = Some(scope); }
+                AppEvent::ScopeDecision(scope) => {
+                    self.code_scope = Some(scope);
+                }
                 AppEvent::TokenStats { prompt, .. } => {
                     // Overwrite with the latest call's prompt_eval_count — this is
                     // the actual context size currently loaded in the model.
@@ -279,7 +333,9 @@ impl App {
         }
 
         self.content_height = estimated_lines;
-        let max_scroll = self.content_height.saturating_sub(self.terminal_height as usize);
+        let max_scroll = self
+            .content_height
+            .saturating_sub(self.terminal_height as usize);
         self.scroll_offset = max_scroll as u16;
     }
 
@@ -336,7 +392,10 @@ mod tests {
     #[tokio::test]
     async fn test_token_appends_to_last_message() {
         let mut app = App::new_for_test();
-        app.history.push(ChatMessage { role: Role::Assistant, content: String::new() });
+        app.history.push(ChatMessage {
+            role: Role::Assistant,
+            content: String::new(),
+        });
         let tx = app.sender_for_test();
         tx.send(AppEvent::Token("hello".to_string())).unwrap();
         app.update();
@@ -347,7 +406,10 @@ mod tests {
     #[tokio::test]
     async fn test_multiple_tokens_concatenate() {
         let mut app = App::new_for_test();
-        app.history.push(ChatMessage { role: Role::Assistant, content: String::new() });
+        app.history.push(ChatMessage {
+            role: Role::Assistant,
+            content: String::new(),
+        });
         let tx = app.sender_for_test();
         tx.send(AppEvent::Token("foo".to_string())).unwrap();
         tx.send(AppEvent::Token(" ".to_string())).unwrap();
@@ -381,11 +443,15 @@ mod tests {
     async fn test_startup_update_transitions_state() {
         let mut app = App::new_for_test();
         let tx = app.sender_for_test();
-        tx.send(AppEvent::StartupUpdate(StartupState::CheckingModel)).unwrap();
+        tx.send(AppEvent::StartupUpdate(StartupState::CheckingModel))
+            .unwrap();
         app.update();
         assert_eq!(app.startup_state, StartupState::CheckingModel);
 
-        tx.send(AppEvent::StartupUpdate(StartupState::Failed("err".to_string()))).unwrap();
+        tx.send(AppEvent::StartupUpdate(StartupState::Failed(
+            "err".to_string(),
+        )))
+        .unwrap();
         app.update();
         assert_eq!(app.startup_state, StartupState::Failed("err".to_string()));
     }
@@ -508,7 +574,11 @@ mod tests {
         use crate::agents::orchestrator::{AgentKind, IntentType, PlanStep};
         TaskPlan {
             intent_type: IntentType::Conversational,
-            steps: vec![PlanStep { agent: AgentKind::Chat, task: "reply".into(), depends_on: None }],
+            steps: vec![PlanStep {
+                agent: AgentKind::Chat,
+                task: "reply".into(),
+                depends_on: None,
+            }],
         }
     }
 
@@ -522,7 +592,9 @@ mod tests {
     async fn route_decision_event_stores_plan() {
         let mut app = App::new_for_test();
         let plan = chat_plan();
-        app.sender_for_test().send(AppEvent::RouteDecision(plan.clone())).unwrap();
+        app.sender_for_test()
+            .send(AppEvent::RouteDecision(plan.clone()))
+            .unwrap();
         app.update();
         assert_eq!(app.route_decision.as_ref().unwrap(), &plan);
     }
@@ -538,9 +610,14 @@ mod tests {
 
         let search_plan = TaskPlan {
             intent_type: IntentType::Factual,
-            steps: vec![PlanStep { agent: AgentKind::Search, task: "look it up".into(), depends_on: None }],
+            steps: vec![PlanStep {
+                agent: AgentKind::Search,
+                task: "look it up".into(),
+                depends_on: None,
+            }],
         };
-        tx.send(AppEvent::RouteDecision(search_plan.clone())).unwrap();
+        tx.send(AppEvent::RouteDecision(search_plan.clone()))
+            .unwrap();
         app.update();
 
         assert_eq!(app.route_decision.as_ref().unwrap(), &search_plan);
@@ -572,12 +649,16 @@ mod tests {
         let tx = app.sender_for_test();
 
         // Set a scope, then send a new RouteDecision — scope should be cleared.
-        tx.send(AppEvent::ScopeDecision(TaskScope::Project)).unwrap();
+        tx.send(AppEvent::ScopeDecision(TaskScope::Project))
+            .unwrap();
         app.update();
         assert_eq!(app.code_scope, Some(TaskScope::Project));
 
         tx.send(AppEvent::RouteDecision(chat_plan())).unwrap();
         app.update();
-        assert!(app.code_scope.is_none(), "RouteDecision should reset code_scope");
+        assert!(
+            app.code_scope.is_none(),
+            "RouteDecision should reset code_scope"
+        );
     }
 }

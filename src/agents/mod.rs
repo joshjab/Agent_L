@@ -19,7 +19,11 @@ pub struct AgentError {
 
 impl std::fmt::Display for AgentError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "agent failed after {} attempt(s): {}", self.attempts, self.last_error)
+        write!(
+            f,
+            "agent failed after {} attempt(s): {}",
+            self.attempts, self.last_error
+        )
     }
 }
 
@@ -133,7 +137,9 @@ mod tests {
         }
 
         fn parse(&self, _response: &str) -> Result<String, ParseError> {
-            Err(ParseError { message: "always fails".into() })
+            Err(ParseError {
+                message: "always fails".into(),
+            })
         }
     }
 
@@ -151,7 +157,9 @@ mod tests {
         }
 
         fn parse(&self, _: &str) -> Result<String, ParseError> {
-            Err(ParseError { message: "fail".into() })
+            Err(ParseError {
+                message: "fail".into(),
+            })
         }
     }
 
@@ -160,7 +168,9 @@ mod tests {
         let result = call_with_retry(
             &OkAgent,
             &[],
-            |_req| async { Ok::<String, Box<dyn std::error::Error>>(r#"{"result":"hello"}"#.into()) },
+            |_req| async {
+                Ok::<String, Box<dyn std::error::Error>>(r#"{"result":"hello"}"#.into())
+            },
             3,
         )
         .await;
@@ -185,7 +195,9 @@ mod tests {
     #[tokio::test]
     async fn injects_error_feedback_on_retry() {
         let calls: Arc<Mutex<Vec<bool>>> = Arc::new(Mutex::new(Vec::new()));
-        let agent = FeedbackTrackingAgent { calls: calls.clone() };
+        let agent = FeedbackTrackingAgent {
+            calls: calls.clone(),
+        };
 
         let _ = call_with_retry(
             &agent,
@@ -207,9 +219,7 @@ mod tests {
         let err = call_with_retry(
             &OkAgent,
             &[],
-            |_req| async {
-                Err::<String, Box<dyn std::error::Error>>("connection refused".into())
-            },
+            |_req| async { Err::<String, Box<dyn std::error::Error>>("connection refused".into()) },
             3,
         )
         .await

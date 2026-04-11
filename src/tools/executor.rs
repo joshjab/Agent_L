@@ -4,7 +4,7 @@
 
 use std::collections::HashMap;
 
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use super::Tool;
 
@@ -32,7 +32,11 @@ pub struct ExecutorError {
 
 impl std::fmt::Display for ExecutorError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "executor error after {} steps: {}", self.steps_taken, self.message)
+        write!(
+            f,
+            "executor error after {} steps: {}",
+            self.steps_taken, self.message
+        )
     }
 }
 
@@ -55,7 +59,10 @@ pub fn parse_react_line(line: &str) -> Option<ReActStep> {
         // Format: "<name> <json_args>"
         let (name, args_str) = rest.split_once(' ')?;
         let args: Value = serde_json::from_str(args_str).ok()?;
-        Some(ReActStep::ToolCall { name: name.to_string(), args })
+        Some(ReActStep::ToolCall {
+            name: name.to_string(),
+            args,
+        })
     } else {
         None
     }
@@ -68,10 +75,10 @@ pub fn parse_react_line(line: &str) -> Option<ReActStep> {
 pub fn validate_args(schema: &Value, args: &Value) -> Result<(), String> {
     if let Some(required) = schema.get("required").and_then(|r| r.as_array()) {
         for field in required {
-            if let Some(name) = field.as_str() {
-                if args.get(name).is_none() {
-                    return Err(format!("missing required field: '{name}'"));
-                }
+            if let Some(name) = field.as_str()
+                && args.get(name).is_none()
+            {
+                return Err(format!("missing required field: '{name}'"));
             }
         }
     }
@@ -105,7 +112,10 @@ where
     for step in 0..max_steps {
         let response = prompt_fn(messages.clone())
             .await
-            .map_err(|e| ExecutorError { message: e.to_string(), steps_taken: step + 1 })?;
+            .map_err(|e| ExecutorError {
+                message: e.to_string(),
+                steps_taken: step + 1,
+            })?;
 
         // Append the model's response as an assistant message.
         messages.push(json!({"role": "assistant", "content": response}));
@@ -124,8 +134,14 @@ where
                     let obs = match tools.get(name.as_str()) {
                         Some(tool) => match validate_args(&tool.schema(), &args) {
                             Ok(()) => match tool.execute(&args) {
-                                Ok(result) => format!("Observation: {result}"),
-                                Err(e) => format!("Observation: Error: {e}"),
+                                Ok(result) => {
+                                    let enriched = build_observation(0, &result);
+                                    format!("Observation: {enriched}")
+                                }
+                                Err(e) => {
+                                    let enriched = build_observation(1, &e);
+                                    format!("Observation: {enriched}")
+                                }
                             },
                             Err(e) => format!("Observation: Validation Error: {e}"),
                         },
@@ -155,6 +171,37 @@ where
     })
 }
 
+/// Build an observation string from a tool result, enriched with exit-code and
+/// semantic-warning metadata for the ReAct loop.
+///
+/// Format:
+/// ```text
+/// [exit:<code>] <output (trimmed to 2000 chars)>
+/// [WARNING: output contains error/failure indicators]   ← only if triggered
+/// ```
+///
+/// The warning is appended whenever the output contains any of the strings
+/// `"error:"`, `"failed:"`, `"panic:"`, or `"WARN:"` — even when `exit_code`
+/// is 0. This prevents the model from claiming success on a command that
+/// printed errors but still exited cleanly.
+pub fn build_observation(exit_code: i32, output: &str) -> String {
+    const MAX_OUTPUT: usize = 2000;
+    let trimmed = if output.len() > MAX_OUTPUT {
+        &output[..MAX_OUTPUT]
+    } else {
+        output
+    };
+
+    let warning_keywords = ["error:", "failed:", "panic:", "WARN:"];
+    let has_warning = warning_keywords.iter().any(|kw| output.contains(kw));
+
+    let mut obs = format!("[exit:{exit_code}] {trimmed}");
+    if has_warning {
+        obs.push_str("\n[WARNING: output contains error/failure indicators]");
+    }
+    obs
+}
+
 // ─── Tests ──────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -162,6 +209,60 @@ mod tests {
     use super::*;
     use crate::tools::test_tools::{AlwaysFailTool, AlwaysOkTool};
     use serde_json::json;
+
+    // ── build_observation ────────────────────────────────────────────────────
+
+    #[test]
+    fn observation_includes_exit_code() {
+        let obs = build_observation(1, "some output");
+        assert!(obs.starts_with("[exit:1]"), "got: {obs}");
+    }
+
+    #[test]
+    fn observation_trims_long_output() {
+        let long = "x".repeat(3000);
+        let obs = build_observation(0, &long);
+        // [exit:0] prefix + space + up to 2000 chars
+        assert!(obs.len() <= "[exit:0] ".len() + 2000 + 100); // +100 for warning line
+        assert!(!obs.contains(&"x".repeat(2001)));
+    }
+
+    #[test]
+    fn observation_adds_warning_for_error_keyword() {
+        let obs = build_observation(0, "build succeeded\nerror: missing field");
+        assert!(obs.contains("[WARNING:"), "got: {obs}");
+    }
+
+    #[test]
+    fn observation_adds_warning_for_failed_keyword() {
+        let obs = build_observation(0, "failed: step 2");
+        assert!(obs.contains("[WARNING:"), "got: {obs}");
+    }
+
+    #[test]
+    fn observation_adds_warning_for_panic_keyword() {
+        let obs = build_observation(0, "thread 'main' panic: index out of bounds");
+        assert!(obs.contains("[WARNING:"), "got: {obs}");
+    }
+
+    #[test]
+    fn observation_adds_warning_for_warn_keyword() {
+        let obs = build_observation(0, "WARN: unused variable");
+        assert!(obs.contains("[WARNING:"), "got: {obs}");
+    }
+
+    #[test]
+    fn observation_no_warning_for_clean_output() {
+        let obs = build_observation(0, "all tests passed successfully");
+        assert!(!obs.contains("[WARNING:"), "got: {obs}");
+    }
+
+    #[test]
+    fn observation_zero_exit_with_panic_keyword_warns() {
+        // exit 0 but panic in output — should still warn
+        let obs = build_observation(0, "panic: something went wrong");
+        assert!(obs.contains("[WARNING:"), "got: {obs}");
+    }
 
     // ── parse_react_line ─────────────────────────────────────────────────────
 
@@ -179,8 +280,7 @@ mod tests {
 
     #[test]
     fn parse_tool_call_line() {
-        let step =
-            parse_react_line(r#"ToolCall: web_search {"query":"rust lang"}"#).unwrap();
+        let step = parse_react_line(r#"ToolCall: web_search {"query":"rust lang"}"#).unwrap();
         assert_eq!(
             step,
             ReActStep::ToolCall {
@@ -263,9 +363,7 @@ mod tests {
                 let call_num = *c;
                 async move {
                     if call_num == 1 {
-                        Ok::<String, Box<dyn std::error::Error>>(
-                            r#"ToolCall: ok_tool {}"#.into(),
-                        )
+                        Ok::<String, Box<dyn std::error::Error>>(r#"ToolCall: ok_tool {}"#.into())
                     } else {
                         Ok("FinalAnswer: got mock result".into())
                     }
@@ -300,9 +398,7 @@ mod tests {
                 let n = lm.len();
                 async move {
                     if n == 1 {
-                        Ok::<String, Box<dyn std::error::Error>>(
-                            r#"ToolCall: ok_tool {}"#.into(),
-                        )
+                        Ok::<String, Box<dyn std::error::Error>>(r#"ToolCall: ok_tool {}"#.into())
                     } else {
                         Ok("FinalAnswer: done".into())
                     }
@@ -330,12 +426,18 @@ mod tests {
         // Tool requires "query" field; we send empty args.
         struct StrictTool;
         impl Tool for StrictTool {
-            fn name(&self) -> &str { "strict" }
-            fn description(&self) -> &str { "requires query" }
+            fn name(&self) -> &str {
+                "strict"
+            }
+            fn description(&self) -> &str {
+                "requires query"
+            }
             fn schema(&self) -> Value {
                 json!({"type":"object","required":["query"],"properties":{"query":{"type":"string"}}})
             }
-            fn execute(&self, _args: &Value) -> Result<String, String> { Ok("ok".into()) }
+            fn execute(&self, _args: &Value) -> Result<String, String> {
+                Ok("ok".into())
+            }
         }
 
         let strict = StrictTool;

@@ -1,4 +1,4 @@
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::future::Future;
 
 use crate::agents::AgentError;
@@ -28,6 +28,12 @@ pub struct Compressor {
     pub turns_to_compress: usize,
 }
 
+impl Default for Compressor {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Compressor {
     /// Create a compressor with production defaults.
     pub fn new() -> Self {
@@ -40,7 +46,10 @@ impl Compressor {
     /// Create a compressor with custom parameters. Used in unit tests only.
     #[cfg(test)]
     pub fn with_params(threshold: usize, turns_to_compress: usize) -> Self {
-        Self { threshold, turns_to_compress }
+        Self {
+            threshold,
+            turns_to_compress,
+        }
     }
 
     /// Build an Ollama request body that asks the model to summarise `turns`.
@@ -130,8 +139,8 @@ impl Compressor {
 ///
 /// Expected format: `{"message": {"content": "..."}}`
 fn extract_content(raw: &str) -> Result<String, String> {
-    let v: Value = serde_json::from_str(raw)
-        .map_err(|e| format!("invalid JSON from Ollama: {e}"))?;
+    let v: Value =
+        serde_json::from_str(raw).map_err(|e| format!("invalid JSON from Ollama: {e}"))?;
 
     v.get("message")
         .and_then(|m| m.get("content"))
@@ -358,7 +367,11 @@ mod tests {
     async fn post_error_returns_agent_error() {
         let c = Compressor::with_params(0, 2);
         // Messages must have enough content to exceed threshold=0 (>4 chars total).
-        let history = vec![user_msg("hello there"), assistant_msg("greetings"), user_msg("bye")];
+        let history = vec![
+            user_msg("hello there"),
+            assistant_msg("greetings"),
+            user_msg("bye"),
+        ];
 
         let err = c
             .maybe_compress(history, "m", None, |_req| async {
@@ -386,7 +399,10 @@ mod tests {
             .unwrap();
 
         // Compression should have run (fewer messages than input)
-        assert!(result.len() < history.len(), "actual_tokens should have triggered compression");
+        assert!(
+            result.len() < history.len(),
+            "actual_tokens should have triggered compression"
+        );
     }
 
     #[tokio::test]
@@ -395,7 +411,11 @@ mod tests {
         let c = Compressor::with_params(2000, 2);
         // Build enough content to exceed estimate threshold but pass actual < 2000
         let big_content = "a".repeat(10_000); // 10_000 chars → 2500 estimated tokens
-        let history = vec![user_msg(&big_content), assistant_msg("reply"), user_msg("ok")];
+        let history = vec![
+            user_msg(&big_content),
+            assistant_msg("reply"),
+            user_msg("ok"),
+        ];
 
         let result = c
             .maybe_compress(history.clone(), "m", Some(100), |_req| async {

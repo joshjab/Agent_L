@@ -1,5 +1,5 @@
-use futures_util::StreamExt;
 use crate::app::AppEvent;
+use futures_util::StreamExt;
 
 /// Send a non-streaming POST request to `url` with the given JSON body and
 /// return the raw response body as a string.
@@ -12,13 +12,7 @@ pub async fn post_json(
     body: serde_json::Value,
 ) -> Result<String, Box<dyn std::error::Error>> {
     let client = reqwest::Client::new();
-    let text = client
-        .post(url)
-        .json(&body)
-        .send()
-        .await?
-        .text()
-        .await?;
+    let text = client.post(url).json(&body).send().await?.text().await?;
     Ok(text)
 }
 
@@ -63,26 +57,23 @@ pub async fn fetch_ollama_stream(
                     }
                     match serde_json::from_str::<serde_json::Value>(line) {
                         Ok(body) => {
-                            if let Some(token) = body["message"]["content"].as_str() {
-                                if !token.is_empty() {
-                                    let _ = tx.send(AppEvent::Token(token.to_string()));
-                                }
+                            if let Some(token) = body["message"]["content"].as_str()
+                                && !token.is_empty()
+                            {
+                                let _ = tx.send(AppEvent::Token(token.to_string()));
                             }
                             // The final chunk (done: true) carries token-usage stats.
                             if body["done"].as_bool() == Some(true) {
-                                let prompt = body["prompt_eval_count"]
-                                    .as_u64().unwrap_or(0) as u32;
-                                let generated = body["eval_count"]
-                                    .as_u64().unwrap_or(0) as u32;
+                                let prompt = body["prompt_eval_count"].as_u64().unwrap_or(0) as u32;
+                                let generated = body["eval_count"].as_u64().unwrap_or(0) as u32;
                                 if prompt > 0 || generated > 0 {
                                     let _ = tx.send(AppEvent::TokenStats { prompt, generated });
                                 }
                             }
                         }
                         Err(_) => {
-                            let _ = tx.send(AppEvent::Token(
-                                format!("\n[Parse Error on: {line}]\n"),
-                            ));
+                            let _ =
+                                tx.send(AppEvent::Token(format!("\n[Parse Error on: {line}]\n")));
                         }
                     }
                 }
@@ -115,7 +106,9 @@ mod tests {
             .await;
 
         let url = format!("{}/api/chat", server.uri());
-        let result = post_json(&url, serde_json::json!({"model": "test"})).await.unwrap();
+        let result = post_json(&url, serde_json::json!({"model": "test"}))
+            .await
+            .unwrap();
         assert_eq!(result, r#"{"message":{"content":"hi"}}"#);
     }
 

@@ -1,4 +1,4 @@
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use tokio::sync::mpsc;
 
 use crate::app::AppEvent;
@@ -12,6 +12,13 @@ use super::SpecialistError;
 pub struct ChatSpecialist;
 
 impl ChatSpecialist {
+    /// Chat only reads conversation state — safe to run in parallel with other
+    /// read-only specialists (e.g. Search, Memory). Used by M8 parallel runner.
+    #[allow(dead_code)]
+    pub fn concurrency_safe() -> bool {
+        true
+    }
+
     /// Stream a chat response for `task` using `messages` as conversation
     /// context. If `context` is provided (output from a `depends_on` step), it
     /// is appended as a user message so the model sees it before responding.
@@ -60,10 +67,14 @@ impl ChatSpecialist {
         // Run the stream; capture_tx is consumed and dropped when this returns.
         crate::ollama::fetch_ollama_stream(chat_url, model, msgs, capture_tx)
             .await
-            .map_err(|e| SpecialistError { message: e.to_string() })?;
+            .map_err(|e| SpecialistError {
+                message: e.to_string(),
+            })?;
 
         // Await the forwarding task to get the full accumulated text.
-        fwd_task.await.map_err(|e| SpecialistError { message: e.to_string() })
+        fwd_task.await.map_err(|e| SpecialistError {
+            message: e.to_string(),
+        })
     }
 }
 
@@ -80,9 +91,7 @@ mod tests {
         chunks
             .iter()
             .map(|(tok, done)| {
-                format!(
-                    "{{\"message\":{{\"content\":\"{tok}\"}},\"done\":{done}}}\n"
-                )
+                format!("{{\"message\":{{\"content\":\"{tok}\"}},\"done\":{done}}}\n")
             })
             .collect()
     }
@@ -143,8 +152,7 @@ mod tests {
         Mock::given(method("POST"))
             .and(path("/api/chat"))
             .respond_with(
-                ResponseTemplate::new(200)
-                    .set_body_string(ndjson_stream(&[("hi", true)])),
+                ResponseTemplate::new(200).set_body_string(ndjson_stream(&[("hi", true)])),
             )
             .mount(&server)
             .await;
@@ -172,8 +180,7 @@ mod tests {
         Mock::given(method("POST"))
             .and(path("/api/chat"))
             .respond_with(
-                ResponseTemplate::new(200)
-                    .set_body_string(ndjson_stream(&[("ok", true)])),
+                ResponseTemplate::new(200).set_body_string(ndjson_stream(&[("ok", true)])),
             )
             .mount(&server)
             .await;

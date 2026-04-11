@@ -41,12 +41,25 @@ async fn chat_plan_streams_response() {
     let (tx, mut rx) = mpsc::unbounded_channel();
     let url = format!("{}/api/chat", server.uri());
 
-    run_plan(&conversational_plan(), &[], "test-model", &url, std::path::Path::new("."), tx)
-        .await
-        .unwrap();
+    run_plan(
+        &conversational_plan(),
+        &[],
+        "test-model",
+        &url,
+        std::path::Path::new("."),
+        tx,
+    )
+    .await
+    .unwrap();
 
     let tokens: String = std::iter::from_fn(|| rx.try_recv().ok())
-        .filter_map(|e| if let AppEvent::Token(t) = e { Some(t) } else { None })
+        .filter_map(|e| {
+            if let AppEvent::Token(t) = e {
+                Some(t)
+            } else {
+                None
+            }
+        })
         .collect();
     assert_eq!(tokens, "Hello there");
 }
@@ -56,21 +69,26 @@ async fn chat_plan_sends_stream_done() {
     let server = MockServer::start().await;
     Mock::given(method("POST"))
         .and(path("/api/chat"))
-        .respond_with(
-            ResponseTemplate::new(200).set_body_string(ndjson(&[("ok", true)])),
-        )
+        .respond_with(ResponseTemplate::new(200).set_body_string(ndjson(&[("ok", true)])))
         .mount(&server)
         .await;
 
     let (tx, mut rx) = mpsc::unbounded_channel();
     let url = format!("{}/api/chat", server.uri());
 
-    run_plan(&conversational_plan(), &[], "m", &url, std::path::Path::new("."), tx)
-        .await
-        .unwrap();
+    run_plan(
+        &conversational_plan(),
+        &[],
+        "m",
+        &url,
+        std::path::Path::new("."),
+        tx,
+    )
+    .await
+    .unwrap();
 
-    let saw_done = std::iter::from_fn(|| rx.try_recv().ok())
-        .any(|e| matches!(e, AppEvent::StreamDone));
+    let saw_done =
+        std::iter::from_fn(|| rx.try_recv().ok()).any(|e| matches!(e, AppEvent::StreamDone));
     assert!(saw_done, "run_plan must emit StreamDone after all steps");
 }
 
@@ -81,9 +99,7 @@ async fn chat_plan_uses_provided_messages() {
     let server = MockServer::start().await;
     Mock::given(method("POST"))
         .and(path("/api/chat"))
-        .respond_with(
-            ResponseTemplate::new(200).set_body_string(ndjson(&[("pong", true)])),
-        )
+        .respond_with(ResponseTemplate::new(200).set_body_string(ndjson(&[("pong", true)])))
         .mount(&server)
         .await;
 
@@ -94,9 +110,16 @@ async fn chat_plan_uses_provided_messages() {
         json!({"role": "user", "content": "ping"}),
     ];
 
-    run_plan(&conversational_plan(), &messages, "m", &url, std::path::Path::new("."), tx)
-        .await
-        .unwrap();
+    run_plan(
+        &conversational_plan(),
+        &messages,
+        "m",
+        &url,
+        std::path::Path::new("."),
+        tx,
+    )
+    .await
+    .unwrap();
 
     // The request was received by the mock server — verify body had our messages.
     let requests = server.received_requests().await.unwrap();
@@ -118,9 +141,7 @@ async fn multistep_plan_with_depends_on_runs_all_steps() {
     // First step
     Mock::given(method("POST"))
         .and(path("/api/chat"))
-        .respond_with(
-            ResponseTemplate::new(200).set_body_string(ndjson(&[("first", true)])),
-        )
+        .respond_with(ResponseTemplate::new(200).set_body_string(ndjson(&[("first", true)])))
         .up_to_n_times(1)
         .mount(&server)
         .await;
@@ -128,9 +149,7 @@ async fn multistep_plan_with_depends_on_runs_all_steps() {
     // Second step
     Mock::given(method("POST"))
         .and(path("/api/chat"))
-        .respond_with(
-            ResponseTemplate::new(200).set_body_string(ndjson(&[("second", true)])),
-        )
+        .respond_with(ResponseTemplate::new(200).set_body_string(ndjson(&[("second", true)])))
         .mount(&server)
         .await;
 
@@ -153,25 +172,38 @@ async fn multistep_plan_with_depends_on_runs_all_steps() {
     let (tx, mut rx) = mpsc::unbounded_channel();
     let url = format!("{}/api/chat", server.uri());
 
-    run_plan(&plan, &[], "m", &url, std::path::Path::new("."), tx).await.unwrap();
+    run_plan(&plan, &[], "m", &url, std::path::Path::new("."), tx)
+        .await
+        .unwrap();
 
     let tokens: String = std::iter::from_fn(|| rx.try_recv().ok())
-        .filter_map(|e| if let AppEvent::Token(t) = e { Some(t) } else { None })
+        .filter_map(|e| {
+            if let AppEvent::Token(t) = e {
+                Some(t)
+            } else {
+                None
+            }
+        })
         .collect();
     assert!(tokens.contains("first") && tokens.contains("second"));
     assert_eq!(server.received_requests().await.unwrap().len(), 2);
 }
 
-// ── Search-only plan falls back to Chat (not repeated) ───────────────────────
+// ── Search plan uses SearchSpecialist (not Chat fallback) ────────────────────
 
-#[tokio::test]
-async fn search_only_plan_streams_exactly_once() {
+// SearchSpecialist calls Ollama in non-streaming mode (envelope format).
+// If the model returns FinalAnswer immediately (no ToolCall), DDG is never
+// called — so this test works without a real network connection.
+#[tokio::test(flavor = "multi_thread")]
+async fn search_only_plan_calls_search_specialist() {
     let server = MockServer::start().await;
+    // Non-streaming Ollama response: the model immediately returns a FinalAnswer
+    // (no ToolCall) so DDG is never contacted.
     Mock::given(method("POST"))
         .and(path("/api/chat"))
-        .respond_with(
-            ResponseTemplate::new(200).set_body_string(ndjson(&[("one answer", true)])),
-        )
+        .respond_with(ResponseTemplate::new(200).set_body_string(
+            r#"{"model":"m","message":{"role":"assistant","content":"FinalAnswer: Paris"},"done":true}"#,
+        ))
         .mount(&server)
         .await;
 
@@ -187,12 +219,24 @@ async fn search_only_plan_streams_exactly_once() {
     let (tx, mut rx) = mpsc::unbounded_channel();
     let url = format!("{}/api/chat", server.uri());
 
-    run_plan(&plan, &[], "m", &url, std::path::Path::new("."), tx).await.unwrap();
+    run_plan(&plan, &[], "m", &url, std::path::Path::new("."), tx)
+        .await
+        .unwrap();
 
     let tokens: String = std::iter::from_fn(|| rx.try_recv().ok())
-        .filter_map(|e| if let AppEvent::Token(t) = e { Some(t) } else { None })
+        .filter_map(|e| {
+            if let AppEvent::Token(t) = e {
+                Some(t)
+            } else {
+                None
+            }
+        })
         .collect();
-    assert_eq!(tokens, "one answer", "expected exactly one response, not repetitions");
+    assert!(
+        tokens.contains("Paris"),
+        "expected Search answer, got: {tokens}"
+    );
+    // SearchSpecialist calls Ollama once (FinalAnswer on first step)
     assert_eq!(server.received_requests().await.unwrap().len(), 1);
 }
 
@@ -203,9 +247,7 @@ async fn unknown_specialist_falls_back_to_chat() {
     let server = MockServer::start().await;
     Mock::given(method("POST"))
         .and(path("/api/chat"))
-        .respond_with(
-            ResponseTemplate::new(200).set_body_string(ndjson(&[("fallback", true)])),
-        )
+        .respond_with(ResponseTemplate::new(200).set_body_string(ndjson(&[("fallback", true)])))
         .mount(&server)
         .await;
 
@@ -221,10 +263,21 @@ async fn unknown_specialist_falls_back_to_chat() {
     let (tx, mut rx) = mpsc::unbounded_channel();
     let url = format!("{}/api/chat", server.uri());
 
-    run_plan(&plan, &[], "m", &url, std::path::Path::new("."), tx).await.unwrap();
+    run_plan(&plan, &[], "m", &url, std::path::Path::new("."), tx)
+        .await
+        .unwrap();
 
     let tokens: Vec<_> = std::iter::from_fn(|| rx.try_recv().ok())
-        .filter_map(|e| if let AppEvent::Token(t) = e { Some(t) } else { None })
+        .filter_map(|e| {
+            if let AppEvent::Token(t) = e {
+                Some(t)
+            } else {
+                None
+            }
+        })
         .collect();
-    assert!(!tokens.is_empty(), "Unknown should fall back to Chat and stream tokens");
+    assert!(
+        !tokens.is_empty(),
+        "Unknown should fall back to Chat and stream tokens"
+    );
 }
