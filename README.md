@@ -13,10 +13,14 @@ The long-term goal is to enable small local models running on consumer GPUs to p
 * **Real-Time Streaming:** Token-by-token response streaming with immediate UI updates as Ollama generates text.
 * **Asynchronous Architecture:** Powered by the `tokio` runtime — network I/O runs in background tasks so the TUI stays responsive.
 * **Startup Health Checks:** On launch, Agent-L connects to Ollama, verifies the configured model is pulled, and polls until it's loaded into memory before allowing input.
+* **Three-Layer Agent Pipeline:** Every request flows through Persona → Agent L (orchestrator) → Specialist. Each layer communicates via validated JSON — no free-text between agents.
+* **Intent Routing:** Agent L classifies each message (`Conversational`, `Factual`, `Creative`, `Task`) and routes to the right specialist automatically.
+* **Search Grounding:** Factual queries always go to the Search specialist (DuckDuckGo + local ripgrep), never to the model's internal knowledge. Responses include source citations.
+* **Code Specialist:** Code requests route to a sandboxed `claude` CLI subprocess for one-off code tasks; project-scope tasks show a clear limitation message.
 * **Robust TUI:** Built with `ratatui`, featuring:
   * **Smart Auto-Scrolling:** Sticks to the bottom while the AI is typing; pauses if you scroll up to review history.
   * **Visual Clarity:** Color-coded separators distinguish User and Assistant messages.
-  * **Basic Markdown:** Bold (`**text**`) is highlighted for readability.
+  * **Markdown & Hyperlinks:** Bold (`**text**`) highlighting; bare `https://` URLs are rendered as OSC 8 clickable links in supported terminals.
 
 ## Prerequisites
 
@@ -61,31 +65,60 @@ OLLAMA_MODEL=gemma3
 
 ## Testing
 
-The test suite covers all modules with inline unit tests and wiremock-based integration tests. No running Ollama instance is required.
+The test suite covers all modules with inline unit tests and wiremock-based integration tests. No running Ollama instance is required for the fast suite.
 
 ```bash
+# Fast suite — no Ollama needed
 cargo test
+
+# Live suite — requires Ollama running with the configured model
+cargo test --test live_pipeline -- --ignored --nocapture
 ```
 
 ## Project Structure
 
 ```
 src/
-  main.rs       — event loop, input handling
-  app.rs        — application state and update logic
-  config.rs     — configuration (env vars / .env file)
-  ollama.rs     — streaming HTTP client for /api/chat
-  startup.rs    — startup health checks (/api/tags, /api/ps)
-  ui.rs         — ratatui rendering and markdown parsing
+  main.rs                     — event loop, keyboard input, terminal I/O
+  lib.rs                      — re-exports all modules for integration tests
+  app.rs                      — App state, AppEvent enum, StartupState enum
+  config.rs                   — configuration (env vars / .env file)
+  ollama.rs                   — streaming HTTP client for /api/chat, post_json helper
+  startup.rs                  — startup health checks (/api/tags, /api/ps)
+  ui.rs                       — ratatui rendering, markdown parsing, OSC 8 hyperlinks
+
+  agents/
+    mod.rs                    — Agent trait, AgentErrorKind, call_with_retry
+    orchestrator.rs           — Agent L: intent classification → TaskPlan
+    persona.rs                — Persona layer: system prompt + context compression
+    compression.rs            — conversation summarisation (triggered by token budget)
+    schema.rs                 — JSON schema validation helpers
+    specialists/
+      mod.rs                  — run_plan(): executes ordered task plan step by step
+      chat.rs                 — ChatSpecialist: conversational/creative, no tools
+      code.rs                 — CodeSpecialist: delegates to claude CLI subprocess
+      search.rs               — SearchSpecialist: DuckDuckGo + local ripgrep
+
+  tools/
+    mod.rs                    — Tool trait, ToolRegistry
+    executor.rs               — ReAct loop: Thought → ToolCall → Observation; circuit breaker
+    search_tools.rs           — web_search (DuckDuckGo) + local_search (ripgrep)
+    claude_code.rs            — claude CLI subprocess runner (used by CodeSpecialist)
+
 tests/
-  ollama_integration.rs   — wiremock tests for the Ollama HTTP client
-  startup_integration.rs  — wiremock tests for startup check sequences
+  ollama_integration.rs       — wiremock tests for the Ollama HTTP client
+  startup_integration.rs      — wiremock tests for startup check sequences
+  orchestrator_integration.rs — wiremock tests for intent classification + plan validation
+  pipeline_integration.rs     — end-to-end: Persona → Agent L → Specialist
+  search_integration.rs       — wiremock tests for DuckDuckGo responses and citation format
+  live/
+    live_pipeline.rs          — live tests against a real Ollama instance (#[ignore] by default)
 ```
 
 ## Roadmap
 
 See [ROADMAP.md](doc/ROADMAP.md) for the full backlog. Upcoming work includes:
 
-- Agent system prompts (Frontend / Intent / Specialist roles)
-- Agent and sub-agent orchestration framework
-- Tool call support
+- Shell specialist with sandboxed command execution and confirmation gate (M8)
+- Persistent memory across sessions — episodic + semantic stores (M9)
+- Per-agent model configuration via TOML (M10)

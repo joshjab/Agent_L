@@ -267,7 +267,7 @@ Fixes for bugs and UX issues found during M7 manual validation. Also adds a live
 
 - [x] **Clickable hyperlinks in the TUI** — Markdown links `[text](url)` are rendered as literal text. Use OSC 8 terminal hyperlink escape sequences (`\x1b]8;;url\x1b\\text\x1b]8;;\x1b\\`) inside `parse_simple_markdown()` in `ui.rs` so that terminals supporting OSC 8 (iTerm2, Kitty, recent GNOME Terminal) render clickable links. Fall back gracefully: if a span contains an OSC 8 sequence and the terminal doesn't support it, it will still display the text. Also detect bare `https://...` URLs in prose and linkify them the same way. Note: OSC 8 is applied to bare `https://` URLs in prose; markdown-style `[text](url)` links are not yet parsed (deferred).
 
-- [ ] **Update docs** — `README.md`, `doc/ARCHITECTURE.md`, and `doc/STRUCTURE.md` were written before M1 was implemented. Update them to reflect the actual M1–M7 codebase: current module list, event flow diagram, specialist routing table, and tool inventory.
+- [x] **Update docs** — `README.md`, `doc/ARCHITECTURE.md`, and `doc/STRUCTURE.md` were written before M1 was implemented. Update them to reflect the actual M1–M7 codebase: current module list, event flow diagram, specialist routing table, and tool inventory.
 
 ### Live integration tests (applies retroactively from M1)
 

@@ -2,7 +2,7 @@
 
 ## Overview
 
-Agent L is a high-performance asynchronous terminal UI (TUI) for interacting with local LLMs via the Ollama API. Built in Rust using `ratatui` and `tokio`, it streams real-time token-by-token responses into a chat interface.
+Agent L is an async terminal UI (TUI) for local LLMs via Ollama. Requests flow through a three-layer agent pipeline: **Persona → Agent L (orchestrator) → Specialist**. Each layer communicates via validated JSON.
 
 ---
 
@@ -10,20 +10,50 @@ Agent L is a high-performance asynchronous terminal UI (TUI) for interacting wit
 
 ```
 Agent_L/
-├── Cargo.toml          # Rust project manifest and dependencies
-├── Cargo.lock          # Locked dependency versions
-├── .gitignore          # Ignores /target and .env
-├── README.md           # Project overview and usage instructions
+├── Cargo.toml                  # Rust project manifest and dependencies
+├── Cargo.lock                  # Locked dependency versions
+├── .env                        # Local config (gitignored)
+├── .gitignore
+├── README.md
 ├── doc/
-│   ├── ROADMAP.md      # Planned features and known fixes
-│   ├── STRUCTURE.md    # This file
-│   └── logo.png        # Project logo
-└── src/
-    ├── main.rs         # Entry point and main event loop
-    ├── app.rs          # Application state and business logic
-    ├── ui.rs           # Terminal UI rendering
-    ├── config.rs       # Configuration via environment variables
-    └── ollama.rs       # Ollama HTTP API and streaming
+│   ├── ROADMAP.md
+│   ├── ARCHITECTURE.md
+│   ├── STRUCTURE.md            # This file
+│   ├── test-cases.md           # Live test catalogue
+│   └── logo.png
+├── src/
+│   ├── main.rs
+│   ├── lib.rs
+│   ├── app.rs
+│   ├── config.rs
+│   ├── ollama.rs
+│   ├── startup.rs
+│   ├── ui.rs
+│   ├── agents/
+│   │   ├── mod.rs
+│   │   ├── orchestrator.rs
+│   │   ├── persona.rs
+│   │   ├── compression.rs
+│   │   ├── schema.rs
+│   │   └── specialists/
+│   │       ├── mod.rs
+│   │       ├── chat.rs
+│   │       ├── code.rs
+│   │       └── search.rs
+│   └── tools/
+│       ├── mod.rs
+│       ├── executor.rs
+│       ├── search_tools.rs
+│       └── claude_code.rs
+└── tests/
+    ├── ollama_integration.rs
+    ├── startup_integration.rs
+    ├── orchestrator_integration.rs
+    ├── pipeline_integration.rs
+    ├── search_integration.rs
+    └── live/
+        ├── README.md
+        └── live_pipeline.rs
 ```
 
 ---
@@ -32,179 +62,204 @@ Agent_L/
 
 ### `src/main.rs` — Entry Point
 
-The async entry point. Initializes the ratatui terminal, creates the `App` instance, and runs the main event loop at ~60 FPS.
+Initializes the ratatui terminal, creates the `App` instance, and runs the main event loop at ~60 FPS.
 
-**Responsibilities:**
-- Terminal setup and teardown
-- Render loop (calls `ui.rs` rendering via ratatui)
-- Keyboard event polling (`crossterm`)
-- Dispatching key events to `App` methods
-- Enforcing auto-scroll behavior
+- Terminal setup and teardown (crossterm alternate screen + raw mode)
+- Keyboard event polling via `event::poll` with a 16ms timeout
+- Dispatches key events: `Ctrl+Q` quit, character input, `Backspace`, arrow keys, `Enter`
+- Calls `App::update()` each frame to drain the event channel
 
-**Functions:**
+---
 
-| Function | Description |
-|----------|-------------|
-| `main() -> io::Result<()>` | Async entry point. Sets up terminal, runs event loop, restores terminal on exit. Handles key events: `Ctrl+Q` (quit), character input, `Backspace`, arrow keys, `Enter`. |
+### `src/lib.rs` — Library Root
+
+Re-exports all modules as `pub mod` so `tests/` integration tests can use `agent_l::*`. Both `main.rs` and `lib.rs` compile the same source files independently (dual-target pattern).
 
 ---
 
 ### `src/app.rs` — Application State
 
-Defines all application state and the core logic for sending prompts, receiving streamed tokens, and managing scroll position.
+`App` holds all mutable state. `AppEvent` is the event enum that all background tasks send into the main loop via an `mpsc::UnboundedChannel`.
 
-**Enums:**
+**Key types:**
 
-| Enum | Variants | Description |
-|------|----------|-------------|
-| `Role` | `User`, `Assistant` | Identifies the sender of a chat message |
+| Type | Purpose |
+|------|---------|
+| `App` | Full application state (history, input, scroll, startup state, current plan) |
+| `AppEvent` | `Token(String)`, `StreamDone`, `StartupUpdate(StartupState)`, `RouteDecision(TaskPlan)`, `ScopeDecision(TaskScope)` |
+| `StartupState` | `Connecting`, `CheckingModel`, `Loading`, `Ready`, `Failed(String)` |
 
-**Structs:**
-
-| Struct | Fields | Description |
-|--------|--------|-------------|
-| `ChatMessage` | `role: Role`, `content: String` | A single message in the chat history |
-| `App` | See below | Full application state |
-
-**`App` Fields:**
-
-| Field | Type | Description |
-|-------|------|-------------|
-| `input` | `String` | Current text in the prompt input box |
-| `history` | `Vec<ChatMessage>` | All messages in the conversation |
-| `scroll_offset` | `u16` | Current vertical scroll position |
-| `content_height` | `usize` | Estimated total content height in lines |
-| `terminal_height` | `u16` | Current terminal viewport height |
-| `auto_scroll` | `bool` | Whether the view should stick to the bottom |
-| `is_loading` | `bool` | True while waiting for the first token from Ollama |
-| `model_name` | `String` | Name of the currently active LLM model |
-| `token_count` | `usize` | Total number of tokens received this session |
-| `exit` | `bool` | Signals the main loop to terminate |
-| `tx` | `mpsc::UnboundedSender<String>` | Sends streamed tokens from async task to UI |
-| `rx` | `mpsc::UnboundedReceiver<String>` | Receives streamed tokens in the main loop |
-
-**`App` Methods:**
-
-| Method | Description |
-|--------|-------------|
-| `new() -> Self` | Constructor. Creates the MPSC channel, loads config, and initializes default state. |
-| `ask_ollama(&mut self)` | Validates input, appends a `User` message and an empty `Assistant` placeholder to history, clears the input field, sets `is_loading`, then spawns an async task that calls `fetch_ollama_stream`. |
-| `update(&mut self)` | Called each frame. Drains the token channel and appends received tokens to the last `Assistant` message. Clears `is_loading` on first token. Increments `token_count`. |
-| `recalculate_scroll(&mut self)` | Estimates total wrapped line count across all messages (assumes 50-char width) and sets `content_height`. |
-| `enforce_auto_scroll(&mut self, total_lines: usize, viewport_height: u16)` | Updates `content_height` and `terminal_height`. If `auto_scroll` is enabled, sets `scroll_offset` to the maximum to keep the view at the bottom. |
-| `scroll_to_bottom(&mut self)` | Computes and sets `scroll_offset` so the last line of content is visible. |
-
----
-
-### `src/ui.rs` — Terminal UI Rendering
-
-Implements ratatui's `Widget` trait for `App` to render the full TUI.
-
-**Trait Implementations:**
-
-| Trait | For | Description |
-|-------|-----|-------------|
-| `Widget` | `&App` | Enables ratatui to call `render()` on the app directly |
-
-**`render()` Layout:**
-
-The terminal is split into three vertical sections:
-
-1. **Chat area** (flexible height) — Scrollable message history
-2. **Prompt input** (3 lines fixed) — Current user input with `> ` prefix, cyan border
-3. **Status bar** (1 line fixed) — Model name, token count, and `[Ctrl+Q] Quit` hint
-
-**Chat rendering details:**
-- Each message is preceded by a horizontal separator
-- User messages are colored **blue** with a `"You:"` prefix
-- Assistant messages are colored **magenta** with an `"Ollama:"` prefix
-- Assistant message content is passed through `parse_simple_markdown()`
-- The outer block has a rounded border and a centered `"🦙 Agent L"` title in yellow/bold
-
-**Functions:**
-
-| Function | Description |
-|----------|-------------|
-| `render(self, area: Rect, buf: &mut Buffer)` | Core rendering method. Builds the layout, styles all widgets, and draws them into the ratatui buffer. |
-| `parse_simple_markdown(text: &str) -> Vec<Line<'_>>` | Minimal Markdown parser. Splits text on `**` delimiters and applies yellow bold styling to enclosed sections. Returns a `Vec<Line>` of styled spans for ratatui. |
+`App::ask_ollama()` pushes the user message and spawns the full pipeline (Persona → Agent L → Specialist) as background tasks. `App::update()` drains `AppEvent`s from the channel each frame.
 
 ---
 
 ### `src/config.rs` — Configuration
 
-Loads runtime configuration from environment variables or a `.env` file.
-
-**Structs:**
-
-| Struct | Fields | Description |
-|--------|--------|-------------|
-| `Config` | `ollama_url: String`, `model_name: String` | Holds the resolved Ollama API endpoint and model name |
-
-**`Config` Methods:**
-
-| Method | Description |
-|--------|-------------|
-| `from_env() -> Self` | Loads `.env` via `dotenvy`. Reads `OLLAMA_HOST` (default `127.0.0.1`), `OLLAMA_PORT` (default `11434`), and `OLLAMA_MODEL` (default `llama3`). Constructs `ollama_url` as `http://{host}:{port}/api/generate`. |
+Reads `OLLAMA_HOST`, `OLLAMA_PORT`, `OLLAMA_MODEL` from env or `.env` (via `dotenvy`). `.env` loading is suppressed in tests with `#[cfg(not(test))]`. `Config::new(host, port, model)` is the direct constructor used by integration tests.
 
 ---
 
-### `src/ollama.rs` — Ollama API Client
+### `src/ollama.rs` — Ollama HTTP Client
 
-Handles HTTP communication with the Ollama server, including streaming response processing.
+Two public functions:
 
-**Functions:**
-
-| Function | Description |
-|----------|-------------|
-| `fetch_ollama_stream(prompt: &str, tx: UnboundedSender<String>) -> Result<(), Box<dyn Error>>` | Sends a POST request to the Ollama `/api/generate` endpoint with `stream: true`. Reads the response as a byte stream, deserializes each newline-delimited JSON chunk, extracts the `response` token string, and sends it through the `tx` channel. Sends error strings through the channel on HTTP or parse failures. |
-
----
-
-## Data Flow
-
-```
-User keystroke (Enter)
-        │
-        ▼
-App::ask_ollama()
-  ├── Appends User message to history
-  ├── Appends empty Assistant placeholder
-  └── Spawns tokio task ──► fetch_ollama_stream()
-                                    │
-                              Streams tokens via
-                              MPSC channel (tx)
-                                    │
-Main loop ◄─────────────── App::update() drains rx
-        │
-        ▼
-ratatui render (60 FPS)
-  └── ui::render() draws chat history + input + status bar
-```
+| Function | Purpose |
+|----------|---------|
+| `fetch_ollama_stream(url, model, messages, tx)` | Streams NDJSON from `/api/chat`; sends `AppEvent::Token` per chunk and `AppEvent::StreamDone` when done |
+| `post_json(url, body)` | One-shot POST returning the full response body as `serde_json::Value`; used by orchestrator and specialist agents |
 
 ---
 
-## Dependencies (`Cargo.toml`)
+### `src/startup.rs` — Startup Health Checks
 
-| Crate | Version | Purpose |
-|-------|---------|---------|
-| `ratatui` | 0.30.0 | Terminal UI framework |
-| `crossterm` | 0.29.0 | Cross-platform terminal input/output |
-| `tokio` | 1.x | Async runtime (full features) |
-| `reqwest` | 0.13.2 | HTTP client with JSON and streaming support |
-| `serde` / `serde_json` | 1.x | JSON serialization/deserialization |
-| `futures-util` | 0.3.32 | Async stream utilities |
-| `dotenvy` | 0.15.7 | `.env` file loading |
+`run_startup_checks(config, tx, timings)` runs three phases:
+1. Connect to `/api/tags` with retry (default 10 retries, 3s delay)
+2. Check the configured model exists in the tags list
+3. Poll `/api/ps` until the model is loaded or timeout (default 60s)
+
+`StartupTimings` controls all delays — tests use short values so they run fast.
 
 ---
 
-## Configuration
+### `src/ui.rs` — TUI Rendering
 
-Copy or create a `.env` file in the project root (it is gitignored):
+Renders the full TUI via ratatui's `Widget` trait. Layout: chat area (scrollable) + prompt input (3 lines) + status bar (1 line).
 
-```env
-OLLAMA_HOST=127.0.0.1
-OLLAMA_PORT=11434
-OLLAMA_MODEL=llama3
+`parse_simple_markdown(text)` handles:
+- `**bold**` — yellow bold spans
+- Bare `https://` URLs — wrapped in OSC 8 terminal hyperlink sequences for clickable links in supported terminals (iTerm2, Kitty, recent GNOME Terminal)
+- Route decision banners (e.g. `[Factual → Search]`) rendered in dim style
+
+---
+
+### `src/agents/mod.rs` — Agent Trait and Retry
+
+Defines the `Agent` trait (all orchestrator and specialist agents implement it) and `call_with_retry()` — calls an agent up to N times, feeding the previous error back into the prompt on each retry.
+
+`AgentErrorKind` enumerates structured failure modes: `InvalidJson`, `SchemaViolation`, `TokenOverflow`, `Timeout`, `AuthFailure`.
+
+---
+
+### `src/agents/orchestrator.rs` — Agent L
+
+`OrchestratorAgent` classifies the user's request and returns a `TaskPlan`:
+
+```json
+{
+  "intent_type": "Factual",
+  "steps": [{ "agent": "Search", "task": "...", "depends_on": null }]
+}
 ```
 
-All three variables have the defaults shown above, so the file is optional if running Ollama locally with `llama3`.
+`IntentType`: `Conversational`, `Factual`, `Creative`, `Task`.
+`AgentKind`: `Chat`, `Search`, `Code`, `Shell`, `Calendar`, `Memory`.
+
+The plan is validated against a JSON schema before use. Max 5 steps; self-referential `depends_on` rejected.
+
+---
+
+### `src/agents/persona.rs` — Persona Layer
+
+`PersonaAgent` wraps the conversation history with a system prompt that defines Agent L's personality and behavior. Injects a goal-reminder message into the history every N turns to prevent drift. Builds the message list passed to Agent L and to specialists.
+
+---
+
+### `src/agents/compression.rs` — Conversation Compression
+
+`CompressionAgent` summarizes old turns when the estimated token count exceeds a threshold. The summary is injected as a `<summary>` system message; recent turns are preserved in full. Prevents context drift in long sessions.
+
+---
+
+### `src/agents/schema.rs` — Schema Helpers
+
+`require_field` and `require_str` — typed accessors for JSON objects that return structured errors on missing or wrong-typed fields. Used by orchestrator and specialist parsers.
+
+---
+
+### `src/agents/specialists/mod.rs` — Plan Executor
+
+`run_plan(plan, history, model, url, cwd, tx)` executes a `TaskPlan` step by step. Resolves `depends_on` chaining (injects prior step output as context). Dispatches each step to the right specialist. On 3 consecutive specialist failures, injects a failure-reason system message so the Persona can explain it to the user.
+
+---
+
+### `src/agents/specialists/chat.rs` — Chat Specialist
+
+Handles `Conversational` and `Creative` intents. No tools — streams tokens directly to the UI via the `AppEvent::Token` channel. Uses the persona system prompt.
+
+---
+
+### `src/agents/specialists/code.rs` — Code Specialist
+
+Handles `Task` intents classified as code work. Uses a keyword heuristic to detect project-scope tasks (e.g. "edit src/main.rs") and shows a limitation message for those (project-scope editing not yet implemented — M8). One-off tasks delegate to the `claude` CLI subprocess via `ClaudeCodeTool`.
+
+---
+
+### `src/agents/specialists/search.rs` — Search Specialist
+
+Handles `Factual` intents. Uses the ReAct executor with two tools:
+- `web_search` — DuckDuckGo Instant Answer API; includes current date in system prompt so model can flag stale results
+- `local_search` — ripgrep over the project directory
+
+Observation formatting: `Title | URL | Snippet` on separate lines (prevents model from copying raw JSON into the answer). Post-processing collapses duplicate consecutive sentences.
+
+---
+
+### `src/tools/mod.rs` — Tool Trait and Registry
+
+`Tool` trait: `name()`, `description()`, `schema()` (JSON Schema object), `execute(args)`.
+`ToolRegistry` is a `HashMap<String, Box<dyn Tool>>` — specialists register their allowed tools at construction time.
+
+---
+
+### `src/tools/executor.rs` — ReAct Loop
+
+`ToolExecutor::run_loop(prompt, registry, tx)` runs the Thought → ToolCall → Observation cycle. Each iteration:
+1. Sends the accumulated messages to Ollama
+2. Parses lines tagged `Thought:`, `Action:`, or `FinalAnswer:`
+3. Executes the tool and appends the `Observation:` to the message list
+4. Hard stops at 10 steps (circuit breaker returns structured error)
+
+---
+
+### `src/tools/search_tools.rs` — Search Tools
+
+| Tool | Description |
+|------|-------------|
+| `WebSearchTool` | POST to DuckDuckGo Instant Answer API; parses abstract + related topics; filters non-`https://` URLs |
+| `LocalSearchTool` | Runs `grep -rn` over a project directory; caps output at 50 lines |
+
+---
+
+### `src/tools/claude_code.rs` — Claude CLI Tool
+
+Runs `claude` as a subprocess for one-off code tasks. `ClaudeCodeTool::run(task, cwd)` captures stdout. `run_streaming(task, cwd, tx)` streams output tokens to the UI channel as they arrive.
+
+---
+
+## Test Files
+
+| File | What it covers |
+|------|----------------|
+| `tests/ollama_integration.rs` | `fetch_ollama_stream` against a wiremock server |
+| `tests/startup_integration.rs` | All startup check sequences (happy path, retry, timeout, model not found) |
+| `tests/orchestrator_integration.rs` | Intent classification, plan validation, retry on bad JSON |
+| `tests/pipeline_integration.rs` | Full Persona → Agent L → Specialist end-to-end with wiremock |
+| `tests/search_integration.rs` | DuckDuckGo response parsing, citation format, local search |
+| `tests/live/live_pipeline.rs` | Live tests against a real Ollama instance (`#[ignore]` by default) |
+
+---
+
+## Dependencies
+
+| Crate | Purpose |
+|-------|---------|
+| `ratatui` | Terminal UI framework |
+| `crossterm` | Cross-platform terminal input/output |
+| `tokio` | Async runtime |
+| `reqwest` | HTTP client (JSON + streaming) |
+| `serde` / `serde_json` | JSON serialization |
+| `futures-util` | Async stream utilities |
+| `dotenvy` | `.env` file loading |
+| `urlencoding` | URL-encodes DuckDuckGo query strings |
+| `tempfile` | Temporary files for Code specialist tests |
+| `wiremock` (dev) | Real local HTTP server for integration tests |

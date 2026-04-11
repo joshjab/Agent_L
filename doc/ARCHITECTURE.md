@@ -191,56 +191,60 @@ This gives the assistant persistent knowledge of the user across sessions withou
 
 ---
 
-## Final Repository Structure
+## Repository Structure
 
-What the repo looks like when all milestones are complete:
+Current state (M1–M7 complete) and planned additions (M8+) are marked below.
 
 ```
 src/
-  main.rs             — unchanged: event loop, keyboard, terminal I/O
-  lib.rs              — re-exports all modules (agents/, tools/, memory/) for integration tests
-  app.rs              — extended: AppEvent gains ToolCall, ToolResult, RouteDecision
-  config.rs           — extended: per-agent model config, TOML file support
-  ollama.rs           — unchanged: low-level HTTP streaming to Ollama (used by all agents)
-  startup.rs          — unchanged: /api/tags + /api/ps health checks
-  ui.rs               — extended: agent trace panel, token budget display
+  main.rs             — ✅ event loop, keyboard, terminal I/O
+  lib.rs              — ✅ re-exports all modules for integration tests
+  app.rs              — ✅ AppEvent (Token, StreamDone, RouteDecision, ScopeDecision), StartupState
+  config.rs           — ✅ OLLAMA_HOST/PORT/MODEL; planned: per-agent model config, TOML (M10)
+  ollama.rs           — ✅ fetch_ollama_stream + post_json
+  startup.rs          — ✅ /api/tags + /api/ps health checks
+  ui.rs               — ✅ markdown, OSC 8 hyperlinks, route banners; planned: token budget display
 
   agents/
-    mod.rs            — Agent trait (prompt, parse, retry); shared retry + schema logic
-    persona.rs        — Persona layer: system prompt, context compression, memory injection
-    orchestrator.rs   — Agent L: classifies intent_type, builds ordered task plan (max 5 steps)
-    compression.rs    — conversation summarization (triggered when token budget fills)
+    mod.rs            — ✅ Agent trait, AgentErrorKind, call_with_retry
+    orchestrator.rs   — ✅ Agent L: intent_type classification, TaskPlan (max 5 steps)
+    persona.rs        — ✅ system prompt, goal reminders; planned: memory injection (M9)
+    compression.rs    — ✅ conversation summarization
+    schema.rs         — ✅ require_field / require_str helpers
     specialists/
-      mod.rs          — Specialist trait; step execution loop; depends_on chaining
-      chat.rs         — Conversational/Creative: no tools, streams tokens directly to UI
-      code.rs         — Code generation, explanation, review; uses code_tools
-      search.rs       — Factual queries: web + local search; always used for facts, never model memory
-      shell.rs        — Sandboxed shell commands with confirmation gate and allow/deny lists
-      calendar.rs     — Date/time parsing and scheduling
-      memory.rs       — Explicit read/write/forget; thin wrapper around memory/
+      mod.rs          — ✅ run_plan(): step execution, depends_on chaining, fallback injection
+      chat.rs         — ✅ Conversational/Creative: no tools, streams tokens to UI
+      code.rs         — ✅ one-off code via claude CLI; project-scope limitation message
+      search.rs       — ✅ Factual: DuckDuckGo + local ripgrep, citation formatting
+      shell.rs        — planned M8: sandboxed shell commands, confirmation gate
+      calendar.rs     — planned (future): date/time and scheduling
+      memory.rs       — planned M9: explicit read/write/forget, wraps memory/
 
   tools/
-    mod.rs            — Tool trait: name, description, JSON schema, execute()
-    executor.rs       — ReAct loop: Thought → ToolCall → Observation; hard step limit + circuit breaker
-    search_tools.rs   — DuckDuckGo web search + ripgrep local file search
-    code_tools.rs     — Syntax highlight, run snippet in sandbox, write to file
-    shell_tools.rs    — Command execution, output capture, sandbox enforcement
+    mod.rs            — ✅ Tool trait, ToolRegistry
+    executor.rs       — ✅ ReAct loop: Thought → ToolCall → Observation; circuit breaker (10 steps)
+    search_tools.rs   — ✅ web_search (DuckDuckGo) + local_search (ripgrep)
+    claude_code.rs    — ✅ claude CLI subprocess runner
+    code_tools.rs     — planned M8+: write to file, run snippet in sandbox
+    shell_tools.rs    — planned M8: command execution, sandbox enforcement
 
-  memory/
-    mod.rs            — Unified read/write API (used by Persona + Memory specialist)
-    episodic.rs       — SQLite log of all turns, tool calls, corrections, timestamps
-    semantic.rs       — Key-value facts ("user prefers X"), consolidated from episodic
-    retrieval.rs      — BM25 keyword search + optional embedding-based semantic search
+  memory/             — planned M9
+    mod.rs
+    episodic.rs       — SQLite log of turns, tool calls, corrections
+    semantic.rs       — consolidated facts ("user prefers X")
+    retrieval.rs      — BM25 keyword + optional embedding search
 
 tests/
-  startup_integration.rs        — existing (unchanged)
-  ollama_integration.rs         — existing (unchanged)
-  orchestrator_integration.rs   — wiremock: single-step + multi-step classification
-  pipeline_integration.rs       — end-to-end: Persona → Agent L → Specialist → Persona
-  search_integration.rs         — wiremock: DuckDuckGo responses, citation formatting
-  memory_integration.rs         — SQLite episodic log, semantic consolidation
+  startup_integration.rs        — ✅
+  ollama_integration.rs         — ✅
+  orchestrator_integration.rs   — ✅
+  pipeline_integration.rs       — ✅
+  search_integration.rs         — ✅
+  memory_integration.rs         — planned M9
+  live/
+    live_pipeline.rs            — ✅ live tests against real Ollama (#[ignore] by default)
 
-config.toml (M10)               — TOML alternative to env vars; model per agent role
+config.toml                     — planned M10: TOML alternative to env vars; model per agent role
 ```
 
 ---
