@@ -71,32 +71,30 @@ Current date and time (UTC): {now}. If a source looks outdated relative to today
 note that in your answer.\n\
 \n\
 AVAILABLE TOOLS (you MUST use one before answering):\n\
-- web_search {{\"query\": \"...\"}} — search the web with DuckDuckGo\n\
+- web_search {{\"query\": \"...\"}} — search the web for current information\n\
 - local_search {{\"query\": \"...\", \"path\": \".\"}} — grep local project files\n\
 \n\
 RULES:\n\
-- You MUST call at least one tool before giving a FinalAnswer. NEVER answer from \
-your own knowledge alone — even if you think you know the answer.\n\
+- You MUST call at least one tool before giving a FinalAnswer.\n\
 - After receiving an Observation, your NEXT output MUST be a FinalAnswer — do NOT \
 call another tool or add more Thoughts.\n\
-- Use the ReAct format — one action per line:\n\
-  Thought: <your reasoning>\n\
-  ToolCall: <tool_name> {{\"arg\": \"value\"}}\n\
-  FinalAnswer: <your answer with source URL or file path>\n\
+- Your FinalAnswer MUST be derived ONLY from the Observation text returned by the \
+tool. Do NOT use your training knowledge to supplement, correct, or override the \
+search results — even if you believe the results are wrong. The search results \
+reflect the current real-world state; your training data may be outdated.\n\
+- Always include the source URL or file path from the Observation in your FinalAnswer.\n\
 \n\
 EXAMPLE (web search):\n\
-Thought: I need to find the latest Rust version.\n\
-ToolCall: web_search {{\"query\": \"latest stable Rust version\"}}\n\
-[Observation returned]\n\
-FinalAnswer: Rust 1.XX was released on DATE. Source: https://...\n\
+Thought: I need to find the current holder of this role.\n\
+ToolCall: web_search {{\"query\": \"current president United States 2025\"}}\n\
+Observation: Title: White House | URL: https://www.whitehouse.gov | Snippet: Donald Trump is the 47th President.\n\
+FinalAnswer: Donald Trump is the current president. Source: https://www.whitehouse.gov\n\
 \n\
 EXAMPLE (local file search):\n\
 Thought: I need to find fn main in project files.\n\
 ToolCall: local_search {{\"query\": \"fn main\", \"path\": \".\"}}\n\
 [Observation returned]\n\
-FinalAnswer: Found fn main in src/main.rs:10 and src/lib.rs:5.\n\
-\n\
-Always include file paths or URLs from the Observation in your FinalAnswer."
+FinalAnswer: Found fn main in src/main.rs:10 and src/lib.rs:5."
     )
 }
 
@@ -243,6 +241,24 @@ mod tests {
         format!(
             r#"{{"AbstractText":"{abstract_text}","AbstractURL":"{url}","AbstractSource":"Test","RelatedTopics":[]}}"#
         )
+    }
+
+    // ── system prompt requirements ───────────────────────────────────────────
+
+    #[test]
+    fn system_prompt_requires_observation_only_grounding() {
+        let prompt = search_system_prompt();
+        // Must tell the model its FinalAnswer must come ONLY from the Observation,
+        // not from training knowledge. Both key phrases must appear.
+        assert!(
+            prompt.contains("ONLY from the Observation")
+                || prompt.contains("only from the Observation"),
+            "prompt must say answer must come ONLY from the Observation: {prompt}"
+        );
+        assert!(
+            prompt.contains("do NOT") || prompt.contains("Do NOT"),
+            "prompt must use 'do NOT' to prohibit using training knowledge: {prompt}"
+        );
     }
 
     // ── deduplicate_sentences ────────────────────────────────────────────────

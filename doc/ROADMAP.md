@@ -344,16 +344,16 @@ roughly $4–8/month at typical personal-use volumes. Still cheaper than any pai
 
 ### Tasks
 
-- [ ] Add `TAVILY_API_KEY`, `BRAVE_API_KEY`, and `SEARCH_PROVIDER` env vars to `src/config.rs`.
+- [x] Add `TAVILY_API_KEY`, `BRAVE_API_KEY`, and `SEARCH_PROVIDER` env vars to `src/config.rs`.
   Add a `SearchProvider` enum (`Tavily`, `Brave`, `DuckDuckGo`). Default: `DuckDuckGo` when no
   key is set so the app still works without any configuration.
-- [ ] Create `src/tools/tavily_search.rs` — a `TavilySearchTool` that implements the `Tool` trait.
+- [x] Create `src/tools/tavily_search.rs` — a `TavilySearchTool` that implements the `Tool` trait.
   Calls `POST https://api.tavily.com/search` with `{"api_key", "query", "search_depth": "basic",
   "max_results": 5}`. Formats the response as `Title | URL | Snippet` lines (same format as the
   existing DDG output so the Search specialist's system prompt needs no changes). If the response
   includes a non-empty `answer` field, prepend it as `Answer: <text>` so the model can cite it
   directly. Use `reqwest::blocking` with `block_in_place` — same pattern as `WebSearchTool`.
-- [ ] Update `WebSearchTool::execute()` in `src/tools/search_tools.rs` to dispatch to the
+- [x] Update `WebSearchTool::execute()` in `src/tools/search_tools.rs` to dispatch to the
   configured backend: `TavilySearchTool` if `SEARCH_PROVIDER=tavily`, existing DDG path otherwise.
   The tool name exposed to the Search specialist stays `web_search` regardless of backend — the
   specialist should not need to know which API is in use.
@@ -362,23 +362,23 @@ roughly $4–8/month at typical personal-use volumes. Still cheaper than any pai
   with `X-Subscription-Token` header. Parses `web.results[].{title, url, description}`. Wire it
   into the `WebSearchTool` dispatcher the same way as Tavily. See
   [`doc/research/search-apis.md`](research/search-apis.md) for Brave API details.
-- [ ] Write unit tests for `TavilySearchTool` using wiremock (same pattern as existing DDG tests):
+- [x] Write unit tests for `TavilySearchTool` using wiremock (same pattern as existing DDG tests):
   - Happy path: mock returns 2 results → formatted output includes title, URL, snippet
   - `answer` field present → prepended as `Answer:` line
   - Empty results → `No results found.` placeholder
   - HTTP error → returns `Err`
   - Missing `api_key` env var → returns `Err` with a clear message
-- [ ] Update `live_factual_review.rs` tests (already in `tests/live/`) so they use Tavily when
+- [x] Update `live_factual_review.rs` tests (already in `tests/live/`) so they use Tavily when
   `TAVILY_API_KEY` is set. The tests already assert `web_search` was called and a URL was cited;
   also assert the answer is non-empty. The pre-commit hook already runs these with `--nocapture`
   and asks for manual sign-off.
-- [ ] Add `.env.example` to the repo root (if it doesn't exist) with:
+- [x] Add `.env.example` to the repo root (if it doesn't exist) with:
   ```
   TAVILY_API_KEY=tvly-your-key-here
   # BRAVE_API_KEY=BSA-your-key-here
   # SEARCH_PROVIDER=tavily   # tavily | brave | duckduckgo (default: duckduckgo)
   ```
-- [ ] Update `doc/ARCHITECTURE.md` to note the search backend config and the three-provider
+- [x] Update `doc/ARCHITECTURE.md` to note the search backend config and the three-provider
   fallback chain (Tavily → Brave → DDG).
 
 > **New files:** `src/tools/tavily_search.rs`, optionally `src/tools/brave_search.rs`,
@@ -386,13 +386,16 @@ roughly $4–8/month at typical personal-use volumes. Still cheaper than any pai
 > **Changed:** `src/config.rs` (SearchProvider enum, new env vars), `src/tools/search_tools.rs`
 > (dispatch to configured backend), `doc/ARCHITECTURE.md`
 
-### Verification
+### Verification ✅
 
 ```bash
 cargo check && cargo clippy -- -D warnings && cargo test && cargo fmt --check
 ```
 
 All existing tests must still pass (DDG path still works; new tests for Tavily added).
+
+✅ 236 tests pass (lib + integration). 5 new Tavily unit tests + 4 new SearchProvider tests.
+Zero warnings, zero clippy errors, fmt clean.
 
 ```bash
 # Set your Tavily key first: export TAVILY_API_KEY=tvly-...
@@ -413,6 +416,78 @@ With Ollama running and `TAVILY_API_KEY` set:
 - `"how are you today?"` → still routes to Chat, no regression
 - Unset `TAVILY_API_KEY` → app still works, falls back to DDG (stable facts still work, current
   events may be stale — acceptable)
+
+---
+
+## M7.7 — UI: Clickable Source Links (ratatui 0.31 upgrade)
+
+Right now, search responses show a `[source]` label where the URL used to be. The label is
+styled (underlined cyan) but not clickable, because ratatui 0.30 has no support for OSC 8
+hyperlinks — the terminal escape sequence that makes text clickable. Ratatui 0.31 added a
+`Span::link(url)` method that emits OSC 8 correctly. This milestone upgrades ratatui and
+wires up clickable `[source]` links.
+
+**What is OSC 8?** It is a standard escape sequence (`\x1b]8;;URL\x1b\\text\x1b]8;;\x1b\\`)
+that tells a supporting terminal emulator to make `text` a clickable hyperlink to `URL`.
+Most modern terminals (iTerm2, GNOME Terminal, Kitty, WezTerm) support it. Terminals that
+don't support it just ignore the escape and show the text normally — so it degrades safely.
+
+**What is a breaking API change?** When a library releases a new version, it sometimes
+renames or removes functions. Code that worked with the old version won't compile with the
+new one until you update the call sites. The ratatui 0.30 → 0.31 upgrade has a few of
+these. The tasks below call them out explicitly so nothing is missed.
+
+### Tasks
+
+- [ ] Bump ratatui in `Cargo.toml` from `"0.30.0"` to `"0.31"`. Run `cargo build` and
+  read every compile error carefully — each one is a call site that needs updating. Do not
+  move on until the build is clean.
+
+- [ ] Check whether the `Buffer::set_string` / `Buffer::set_spans` API changed in 0.31.
+  The ratatui changelog and migration guide (in the ratatui GitHub repo under
+  `CHANGELOG.md`) lists every breaking change. Search for "breaking" and "removed" in the
+  0.31 section. Fix any call sites in `src/ui.rs` that the changelog flags.
+
+- [ ] Check the `Widget` trait signature. In some ratatui versions the method changed from
+  `fn render(self, area: Rect, buf: &mut Buffer)` to taking `&self` or `&mut self`. Look
+  at the compile error (if any) on `impl Widget for &App` in `src/ui.rs` and update the
+  signature to match what 0.31 expects.
+
+- [ ] In `linkify_text` in `src/ui.rs`, replace the plain `Span::styled("[source]", ...)`
+  with a span that also carries the URL using the new `Span::link` method. The call looks
+  like:
+  ```rust
+  Span::styled("[source]", Style::default().add_modifier(Modifier::UNDERLINED).fg(Color::Cyan))
+      .link(url_str[..end].to_string())
+  ```
+  `url_str[..end]` is the raw URL already extracted by the surrounding loop — capture it in
+  a local variable before replacing the span.
+
+- [ ] Update the `bare_url_gets_linkified` test in `src/ui.rs` to also assert that the
+  `[source]` span carries a non-empty link attribute. The ratatui `Span` type in 0.31
+  exposes the link as `span.link` (a `Option<String>` or similar — check the type
+  definition). Assert it equals `"https://example.com"`.
+
+- [ ] Run `cargo check && cargo clippy -- -D warnings && cargo test && cargo fmt --check`
+  and confirm everything is green. Pay attention to any new clippy warnings introduced by
+  the ratatui bump — they are likely flagging patterns that ratatui deprecated.
+
+- [ ] Manual smoke test: run `cargo run` with Ollama and `TAVILY_API_KEY` set. Ask a
+  factual question. Confirm `[source]` appears in the response and is clickable in your
+  terminal (Ctrl+click or Cmd+click depending on OS). If your terminal doesn't support
+  OSC 8, check that `[source]` still renders and no garbage characters appear.
+
+### Verification
+
+```bash
+cargo check && cargo clippy -- -D warnings && cargo test && cargo fmt --check
+```
+
+All existing tests must still pass. The new test asserts the `[source]` span carries the
+URL in its link attribute.
+
+Manual check with a supporting terminal: `[source]` in a search response must be
+clickable and open the source URL in a browser.
 
 ---
 

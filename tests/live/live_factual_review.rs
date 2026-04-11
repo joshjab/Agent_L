@@ -21,10 +21,16 @@ use agent_l::agents::orchestrator::{AgentKind, IntentType, OrchestratorAgent, Pl
 use agent_l::agents::specialists::run_plan;
 use agent_l::app::AppEvent;
 use agent_l::config::Config;
+use agent_l::tools::Tool;
+use agent_l::tools::tavily_search::TavilySearchTool;
 use serde_json::json;
 use tokio::sync::mpsc;
 
 fn live_config() -> Config {
+    // Load .env so live tests pick up OLLAMA_HOST/PORT/MODEL just like the
+    // binary does. Config::from_env() skips dotenv in cfg(test) contexts to
+    // keep unit tests deterministic, so we load it manually here.
+    let _ = dotenvy::dotenv();
     Config::from_env()
 }
 
@@ -90,7 +96,8 @@ fn print_review(question: &str, response: &str, tool_calls: &[String]) {
 // ─── Tests ────────────────────────────────────────────────────────────────────
 
 /// "Who is the current president of the United States?" must route to Search,
-/// call web_search, and return a non-empty answer. Human verifies correctness.
+/// call web_search, and return a non-empty answer containing "Trump".
+/// Update the pattern when the president changes.
 #[tokio::test(flavor = "multi_thread")]
 #[ignore]
 async fn review_current_us_president() {
@@ -104,16 +111,20 @@ async fn review_current_us_president() {
         "Must call web_search before answering, tool_calls: {tool_calls:?}"
     );
     assert!(!response.is_empty(), "Response must not be empty");
-    // The model must NOT have answered from knowledge before searching.
-    // If no URL appears in the response, it likely fabricated the answer.
     assert!(
         response.contains("http://") || response.contains("https://"),
         "Response must cite a source URL from the search result, got: {response:?}"
+    );
+    // Expected answer as of 2025-01-20. Update when the president changes.
+    assert!(
+        response.to_lowercase().contains("trump"),
+        "Expected 'Trump' in response (update this assertion when president changes), got: {response:?}"
     );
 }
 
 /// "Who is the current Prime Minister of the United Kingdom?" — another
 /// current-leader question that models often answer from stale training data.
+/// Update the pattern when the PM changes.
 #[tokio::test(flavor = "multi_thread")]
 #[ignore]
 async fn review_current_uk_pm() {
@@ -127,6 +138,11 @@ async fn review_current_uk_pm() {
         "Must call web_search, tool_calls: {tool_calls:?}"
     );
     assert!(!response.is_empty(), "Response must not be empty");
+    // Expected answer as of 2024-07-05. Update when the PM changes.
+    assert!(
+        response.to_lowercase().contains("starmer"),
+        "Expected 'Starmer' in response (update this assertion when PM changes), got: {response:?}"
+    );
 }
 
 /// Verify that the orchestrator correctly routes "current president" to Search
@@ -174,4 +190,20 @@ async fn review_routing_current_president_goes_to_search() {
         "Current-president query must route to Search, got: {:?}",
         plan.steps[0].agent
     );
+}
+
+/// Debug test: print the raw Tavily observation for the US president query
+/// so we can see exactly what the model receives before answering.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore]
+async fn debug_tavily_raw_observation() {
+    let _ = dotenvy::dotenv();
+    let tool = TavilySearchTool::from_env().expect("TAVILY_API_KEY must be set");
+    let result = tool
+        .execute(&json!({"query": "who is the current president of the United States 2025"}))
+        .unwrap();
+    println!();
+    println!("━━━ RAW TAVILY OBSERVATION ━━━━━━━━━━━━━━━━━━━━━━━━━━");
+    println!("{result}");
+    println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
 }

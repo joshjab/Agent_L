@@ -2,6 +2,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 use super::Tool;
+use crate::config::SearchProvider;
+use crate::tools::tavily_search::TavilySearchTool;
 
 /// A single search result returned by the Search specialist.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -174,9 +176,17 @@ impl Tool for WebSearchTool {
         })
     }
 
-    /// Calls DuckDuckGo synchronously (uses `block_in_place` to avoid blocking
-    /// the async executor). Returns a JSON array of `SearchResult` objects.
+    /// Dispatches to the configured search backend, then falls back to DDG.
+    ///
+    /// - `SEARCH_PROVIDER=tavily` → Tavily API (requires `TAVILY_API_KEY`)
+    /// - anything else → DuckDuckGo Instant Answer API (no key needed)
     fn execute(&self, args: &Value) -> Result<String, String> {
+        if SearchProvider::from_env() == SearchProvider::Tavily {
+            let tool = TavilySearchTool::from_env()?;
+            return tool.execute(args);
+        }
+
+        // DuckDuckGo path (default / fallback).
         let query = args["query"]
             .as_str()
             .ok_or_else(|| "missing 'query' argument".to_string())?;

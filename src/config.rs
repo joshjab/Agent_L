@@ -1,5 +1,25 @@
 use std::env;
 
+/// Which search backend to use for the `web_search` tool.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SearchProvider {
+    Tavily,
+    Brave,
+    DuckDuckGo,
+}
+
+impl SearchProvider {
+    /// Read `SEARCH_PROVIDER` from the environment.
+    /// Defaults to `DuckDuckGo` when the variable is absent or unrecognised.
+    pub fn from_env() -> Self {
+        match env::var("SEARCH_PROVIDER").as_deref() {
+            Ok("tavily") => SearchProvider::Tavily,
+            Ok("brave") => SearchProvider::Brave,
+            _ => SearchProvider::DuckDuckGo,
+        }
+    }
+}
+
 pub struct Config {
     pub base_url: String,
     pub model_name: String,
@@ -33,6 +53,53 @@ impl Config {
 mod tests {
     use super::*;
     use std::sync::Mutex;
+
+    // ── SearchProvider ───────────────────────────────────────────────────────
+
+    #[test]
+    fn search_provider_defaults_to_duckduckgo() {
+        let _guard = ENV_MUTEX.lock().unwrap();
+        unsafe {
+            std::env::remove_var("SEARCH_PROVIDER");
+        }
+        assert_eq!(SearchProvider::from_env(), SearchProvider::DuckDuckGo);
+    }
+
+    #[test]
+    fn search_provider_tavily_from_env() {
+        let _guard = ENV_MUTEX.lock().unwrap();
+        unsafe {
+            std::env::set_var("SEARCH_PROVIDER", "tavily");
+        }
+        assert_eq!(SearchProvider::from_env(), SearchProvider::Tavily);
+        unsafe {
+            std::env::remove_var("SEARCH_PROVIDER");
+        }
+    }
+
+    #[test]
+    fn search_provider_brave_from_env() {
+        let _guard = ENV_MUTEX.lock().unwrap();
+        unsafe {
+            std::env::set_var("SEARCH_PROVIDER", "brave");
+        }
+        assert_eq!(SearchProvider::from_env(), SearchProvider::Brave);
+        unsafe {
+            std::env::remove_var("SEARCH_PROVIDER");
+        }
+    }
+
+    #[test]
+    fn search_provider_unknown_falls_back_to_duckduckgo() {
+        let _guard = ENV_MUTEX.lock().unwrap();
+        unsafe {
+            std::env::set_var("SEARCH_PROVIDER", "unknown_provider");
+        }
+        assert_eq!(SearchProvider::from_env(), SearchProvider::DuckDuckGo);
+        unsafe {
+            std::env::remove_var("SEARCH_PROVIDER");
+        }
+    }
 
     // Serialize env-var tests to prevent parallel test races
     static ENV_MUTEX: Mutex<()> = Mutex::new(());

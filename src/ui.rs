@@ -265,16 +265,22 @@ fn linkify_text(text: &str) -> Vec<Span<'static>> {
     let mut remaining = text;
 
     while let Some(pos) = remaining.find("https://") {
-        if pos > 0 {
-            spans.push(Span::raw(remaining[..pos].to_string()));
+        // Strip a trailing "Source: " label immediately before the URL — it is
+        // redundant once the URL is already rendered as "[source]".
+        let prefix = &remaining[..pos];
+        let trimmed_prefix = prefix.strip_suffix("Source: ").unwrap_or(prefix);
+        if !trimmed_prefix.is_empty() {
+            spans.push(Span::raw(trimmed_prefix.to_string()));
         }
         let url_str = &remaining[pos..];
         // URL ends at whitespace or closing punctuation that follows a URL.
         let end = url_str
             .find(|c: char| c.is_whitespace() || matches!(c, ')' | ']' | '"' | '\'' | ',' | ';'))
             .unwrap_or(url_str.len());
+        // Render the URL as "[source]" rather than the raw link — the full URL
+        // clutters the output and is not clickable in ratatui (OSC 8 is unsupported).
         spans.push(Span::styled(
-            url_str[..end].to_string(),
+            "[source]",
             Style::default()
                 .add_modifier(Modifier::UNDERLINED)
                 .fg(Color::Cyan),
@@ -653,15 +659,16 @@ mod tests {
 
     // ── URL linkification ────────────────────────────────────────────────────
 
-    /// A bare `https://` URL in prose should be rendered as underlined cyan.
+    /// A bare `https://` URL in prose should be rendered as `[source]` in
+    /// underlined cyan — not as the raw URL text, which clutters the output.
     #[test]
     fn bare_url_gets_linkified() {
         let lines = parse_simple_markdown("Visit https://example.com for more info");
         let url_span = lines[0]
             .spans
             .iter()
-            .find(|s| s.content.contains("https://example.com"))
-            .expect("URL span missing");
+            .find(|s| s.content.as_ref() == "[source]")
+            .expect("[source] span missing");
         assert!(
             url_span.style.add_modifier.contains(Modifier::UNDERLINED),
             "URL span should be underlined"
@@ -671,14 +678,14 @@ mod tests {
             Some(Color::Cyan),
             "URL span should be cyan"
         );
-        // No raw escape sequences — ratatui would render them as garbage
-        assert!(
-            !url_span.content.contains('\x1b'),
-            "no escape sequences in URL span"
-        );
         let all_content: String = lines[0].spans.iter().map(|s| s.content.as_ref()).collect();
         assert!(all_content.contains("Visit "));
         assert!(all_content.contains(" for more info"));
+        // Raw URL must not appear in the rendered output
+        assert!(
+            !all_content.contains("https://"),
+            "raw URL must not appear in rendered output"
+        );
     }
 
     /// Non-URL text should not be affected by linkification.
@@ -719,18 +726,45 @@ mod tests {
         );
     }
 
-    /// A URL at the end of a line (no trailing text) should still be linkified.
+    /// "Source: https://..." should collapse to just "[source]" — the "Source: "
+    /// label is redundant once the URL is already replaced with "[source]".
+    #[test]
+    fn source_prefix_is_stripped_with_url() {
+        let lines = parse_simple_markdown(
+            "Trump is president. Source: https://en.wikipedia.org/wiki/France",
+        );
+        let all_content: String = lines[0].spans.iter().map(|s| s.content.as_ref()).collect();
+        assert!(
+            !all_content.contains("Source:"),
+            "redundant 'Source:' label must be stripped, got: {all_content:?}"
+        );
+        assert!(
+            all_content.contains("[source]"),
+            "must still render [source], got: {all_content:?}"
+        );
+        assert!(
+            !all_content.contains("https://"),
+            "raw URL must not appear in rendered output"
+        );
+    }
+
+    /// A URL at the end of a line should render as `[source]`, not the raw URL.
     #[test]
     fn url_at_end_of_line_linkified() {
-        let lines = parse_simple_markdown("Source: https://en.wikipedia.org/wiki/France");
+        let lines = parse_simple_markdown("Answer here https://en.wikipedia.org/wiki/France");
         let url_span = lines[0]
             .spans
             .iter()
-            .find(|s| s.content.contains("https://en.wikipedia.org/wiki/France"))
-            .expect("URL span missing");
+            .find(|s| s.content.as_ref() == "[source]")
+            .expect("[source] span missing");
         assert!(
             url_span.style.add_modifier.contains(Modifier::UNDERLINED),
             "URL at end of line should be underlined"
+        );
+        let all_content: String = lines[0].spans.iter().map(|s| s.content.as_ref()).collect();
+        assert!(
+            !all_content.contains("https://"),
+            "raw URL must not appear in rendered output"
         );
     }
 }

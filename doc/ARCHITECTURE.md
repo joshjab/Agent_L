@@ -76,6 +76,34 @@ Specialists run in sequence. The output of each step is injected as context into
 
 **Hard limit:** max 5 steps per plan. If Agent L returns more, the circuit breaker fires and the Persona asks the user to break the request into smaller parts.
 
+### ReAct loop (specialist execution)
+
+Each specialist that uses tools runs a **ReAct loop** (`src/tools/executor.rs`). The loop alternates between model turns and tool execution:
+
+```
+Round 1 — model turn:
+  Thought: I need to find the current president.
+  ToolCall: web_search {"query": "current US president 2025"}
+
+Round 1 — executor:
+  → Calls Tavily → gets "Donald Trump is the 47th president..."
+  → Injects Observation into messages, including a quoted snippet:
+    "The search result says: 'Donald Trump is the 47th and current president
+     since January 20, 2025.' — your answer MUST use this."
+
+Round 2 — model turn:
+  FinalAnswer: Donald Trump is the 47th president. Source: https://...
+```
+
+**Premature FinalAnswer guard.** Small local models (e.g. gemma3) sometimes emit a `ToolCall` and a `FinalAnswer` in the same response — the tool call is a formality and the answer comes from training data, before the model has seen the search result. The executor detects this: if a `FinalAnswer` appears in the same turn as a `ToolCall`, the `FinalAnswer` is discarded, the tool runs, and the observation is injected. The model is forced to answer in a fresh round where the search result is the only new information in context.
+
+**Observation injection.** After each tool call the executor appends a user message containing:
+1. The full tool output (prefixed `[exit:N]`)
+2. The first `Snippet:` line quoted back explicitly — making it structurally hard for the model to ignore
+3. A strong reminder: "Your FinalAnswer MUST copy the exact names and facts from the Observation. Do NOT use your training knowledge."
+
+**Circuit breaker.** If the model reaches `MAX_STEPS` (10) without a `FinalAnswer`, the loop returns a structured error instead of looping forever.
+
 ### Why this prevents drift
 
 - **Constrained outputs at every boundary** — agents communicate via JSON schemas, not prose. Invalid tokens are masked via GBNF grammar sampling (Ollama supports this natively). A model cannot hallucinate a field that isn't in the schema.
@@ -96,6 +124,7 @@ Specialists run in sequence. The output of each step is injected as context into
 | Runaway loops | Hard step limit + circuit breaker per specialist |
 | Compound task sprawl | Ordered task plan with max 5-step limit; each step validated independently |
 | Model hallucination on facts | `intent_type: Factual` always routes to Search — model's internal knowledge is never trusted for real-world state |
+| Premature FinalAnswer before search result | ReAct executor discards any `FinalAnswer` emitted in the same turn as a `ToolCall`; the model must answer again after seeing the observation |
 
 ---
 
@@ -135,7 +164,7 @@ Persona → Agent L → { steps: [{ agent: "Code", task: "explain startup.rs" }]
 
 ```
 Persona → Agent L → { intent_type: "Factual", steps: [{ agent: "Search", task: "Rust async runtimes 2026" }] }
-         → Search Specialist (DuckDuckGo) → returns citations → Persona writes prose summary
+         → Search Specialist (Tavily when TAVILY_API_KEY set, else DuckDuckGo) → returns citations → Persona writes prose summary
 ```
 
 ### 4. Compound task: search then email
@@ -200,7 +229,7 @@ src/
   main.rs             — ✅ event loop, keyboard, terminal I/O
   lib.rs              — ✅ re-exports all modules for integration tests
   app.rs              — ✅ AppEvent (Token, StreamDone, RouteDecision, ScopeDecision), StartupState
-  config.rs           — ✅ OLLAMA_HOST/PORT/MODEL; planned: per-agent model config, TOML (M10)
+  config.rs           — ✅ OLLAMA_HOST/PORT/MODEL, SearchProvider enum (SEARCH_PROVIDER env var); planned: per-agent model config, TOML (M10)
   ollama.rs           — ✅ fetch_ollama_stream + post_json
   startup.rs          — ✅ /api/tags + /api/ps health checks
   ui.rs               — ✅ markdown, OSC 8 hyperlinks, route banners; planned: token budget display
@@ -222,8 +251,9 @@ src/
 
   tools/
     mod.rs            — ✅ Tool trait, ToolRegistry
-    executor.rs       — ✅ ReAct loop: Thought → ToolCall → Observation; circuit breaker (10 steps)
-    search_tools.rs   — ✅ web_search (DuckDuckGo) + local_search (ripgrep)
+    executor.rs       — ✅ ReAct loop: Thought → ToolCall → Observation → FinalAnswer; circuit breaker (10 steps); premature-FinalAnswer guard
+    search_tools.rs   — ✅ web_search dispatcher (Tavily → Brave → DDG fallback) + local_search (ripgrep)
+    tavily_search.rs  — ✅ Tavily Search API backend (requires TAVILY_API_KEY)
     claude_code.rs    — ✅ claude CLI subprocess runner
     code_tools.rs     — planned M8+: write to file, run snippet in sandbox
     shell_tools.rs    — planned M8: command execution, sandbox enforcement
@@ -245,7 +275,21 @@ tests/
     live_pipeline.rs            — ✅ live tests against real Ollama (#[ignore] by default)
 
 config.toml                     — planned M10: TOML alternative to env vars; model per agent role
+
+.env.example                    — ✅ template for OLLAMA_* and search API keys
 ```
+
+### Search backend configuration (M7.6)
+
+The `web_search` tool dispatches to one of three backends based on environment variables:
+
+| `SEARCH_PROVIDER` | Required env var | Notes |
+|---|---|---|
+| `tavily` (recommended) | `TAVILY_API_KEY` | Live web results; 1,000 free credits/month |
+| `brave` | `BRAVE_API_KEY` | Alternative live search |
+| *(default)* | — | DuckDuckGo Instant Answer API; no key; may return stale Wikipedia data for current-events queries |
+
+Set `SEARCH_PROVIDER=tavily` and `TAVILY_API_KEY=tvly-...` in `.env` to enable Tavily. When `TAVILY_API_KEY` is absent the tool returns an error rather than silently falling back, so misconfiguration is obvious. Copy `.env.example` to `.env` to get started.
 
 ---
 

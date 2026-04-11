@@ -20,6 +20,10 @@ use agent_l::config::Config;
 use tokio::sync::mpsc;
 
 fn live_config() -> Config {
+    // Load .env so live tests pick up OLLAMA_HOST/PORT/MODEL just like the
+    // binary does. Config::from_env() skips dotenv in cfg(test) contexts to
+    // keep unit tests deterministic, so we load it manually here.
+    let _ = dotenvy::dotenv();
     Config::from_env()
 }
 

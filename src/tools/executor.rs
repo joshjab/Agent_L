@@ -175,7 +175,14 @@ where
             }
         }
 
-        if let Some(ans) = final_answer {
+        // A FinalAnswer is only accepted when no tool calls were made in this
+        // same response. If the model emits both a ToolCall and a FinalAnswer
+        // in one turn, the FinalAnswer is premature (the model hasn't yet seen
+        // the search result) and must be discarded. The observation is injected
+        // and the model will produce a grounded FinalAnswer in the next round.
+        if observations.is_empty()
+            && let Some(ans) = final_answer
+        {
             return Ok(ans);
         }
 
@@ -184,12 +191,20 @@ where
         // sees it immediately before its next turn — the system-prompt instruction
         // alone is often ignored by smaller models after a tool result.
         for obs in observations {
+            // Quote the first snippet back to the model so it can't substitute
+            // a different fact from training knowledge.
+            let snippet_reminder = extract_first_snippet(&obs)
+                .map(|s| format!("\nThe search result says: \"{s}\" — your answer MUST use this."))
+                .unwrap_or_default();
+
             let content = format!(
-                "{obs}\n\n\
-                 You now have the Observation above. \
-                 Your next output MUST be exactly:\n\
-                 FinalAnswer: <your complete answer>\n\
-                 Do NOT call any more tools."
+                "{obs}{snippet_reminder}\n\n\
+                 IMPORTANT: The Observation above is the current, authoritative answer. \
+                 Your FinalAnswer MUST copy the exact names, numbers, and facts from the \
+                 Observation. Do NOT use your training knowledge. Do NOT change or override \
+                 the Observation content, even if it contradicts what you believe.\n\n\
+                 Your next output MUST be:\n\
+                 FinalAnswer: <answer copied directly from the Observation, with source URL>"
             );
             messages.push(json!({"role": "user", "content": content}));
         }
@@ -199,6 +214,18 @@ where
         message: format!("reached step limit ({max_steps}) without a FinalAnswer"),
         steps_taken: max_steps,
     })
+}
+
+/// Extract the first `Snippet: <text>` line from a formatted observation.
+/// Used to quote the key search finding back to the model in the injection
+/// message so it cannot be overridden by training knowledge.
+fn extract_first_snippet(obs: &str) -> Option<&str> {
+    for line in obs.lines() {
+        if let Some(snippet) = line.strip_prefix("Snippet: ") {
+            return Some(snippet.trim());
+        }
+    }
+    None
 }
 
 /// Build an observation string from a tool result, enriched with exit-code and
@@ -239,6 +266,23 @@ mod tests {
     use super::*;
     use crate::tools::test_tools::{AlwaysFailTool, AlwaysOkTool};
     use serde_json::json;
+
+    // ── extract_first_snippet ─────────────────────────────────────────────────
+
+    #[test]
+    fn extract_first_snippet_returns_snippet_line() {
+        let obs = "Title: Foo\nURL: https://example.com\nSnippet: Donald Trump is president.";
+        assert_eq!(
+            extract_first_snippet(obs),
+            Some("Donald Trump is president.")
+        );
+    }
+
+    #[test]
+    fn extract_first_snippet_returns_none_when_absent() {
+        let obs = "Title: Foo\nURL: https://example.com";
+        assert_eq!(extract_first_snippet(obs), None);
+    }
 
     // ── build_observation ────────────────────────────────────────────────────
 
@@ -408,6 +452,57 @@ mod tests {
 
         assert_eq!(result, "got mock result");
         assert_eq!(*calls.lock().unwrap(), 2);
+    }
+
+    #[tokio::test]
+    async fn tool_call_takes_priority_over_same_turn_final_answer() {
+        // When the model emits ToolCall and FinalAnswer in the SAME response, the
+        // ToolCall must be executed and the premature FinalAnswer discarded. The
+        // observation is injected, and the model must produce a new FinalAnswer
+        // in the next round (which may then use the search result).
+        let ok_tool = AlwaysOkTool { name: "ok_tool" };
+        let mut tools: HashMap<&str, &dyn Tool> = HashMap::new();
+        tools.insert("ok_tool", &ok_tool);
+
+        let calls = std::sync::Arc::new(std::sync::Mutex::new(0u32));
+        let calls_clone = calls.clone();
+
+        let result = execute_react_loop(
+            vec![json!({"role": "user", "content": "use tool then answer"})],
+            &tools,
+            move |_msgs| {
+                let mut c = calls_clone.lock().unwrap();
+                *c += 1;
+                let n = *c;
+                async move {
+                    if n == 1 {
+                        // Model emits ToolCall AND premature FinalAnswer together
+                        Ok::<String, Box<dyn std::error::Error>>(
+                            "ToolCall: ok_tool {}\nFinalAnswer: premature answer".into(),
+                        )
+                    } else {
+                        // Second call: model sees observation, gives correct answer
+                        Ok("FinalAnswer: answer after seeing observation".into())
+                    }
+                }
+            },
+            None,
+            MAX_STEPS,
+        )
+        .await
+        .unwrap();
+
+        // The premature FinalAnswer must be discarded; the answer must come from
+        // the second round (after the model saw the tool observation).
+        assert_eq!(
+            result, "answer after seeing observation",
+            "premature FinalAnswer (before observation) must be discarded"
+        );
+        assert_eq!(
+            *calls.lock().unwrap(),
+            2,
+            "model must be called twice (tool call round + answer round)"
+        );
     }
 
     #[tokio::test]

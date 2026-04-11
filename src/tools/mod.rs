@@ -1,6 +1,7 @@
 pub mod claude_code;
 pub mod executor;
 pub mod search_tools;
+pub mod tavily_search;
 
 use serde_json::Value;
 
