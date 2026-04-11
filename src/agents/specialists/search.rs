@@ -75,26 +75,31 @@ AVAILABLE TOOLS (you MUST use one before answering):\n\
 - local_search {{\"query\": \"...\", \"path\": \".\"}} — grep local project files\n\
 \n\
 RULES:\n\
-- You MUST call at least one tool before giving a FinalAnswer.\n\
+- You MUST call at least one tool before giving a FinalAnswer. NEVER answer from \
+your own knowledge alone — even if you think you know the answer.\n\
 - After receiving an Observation, your NEXT output MUST be a FinalAnswer — do NOT \
 call another tool or add more Thoughts.\n\
-- Your FinalAnswer MUST be derived ONLY from the Observation text returned by the \
-tool. Do NOT use your training knowledge to supplement, correct, or override the \
-search results — even if you believe the results are wrong. The search results \
-reflect the current real-world state; your training data may be outdated.\n\
-- Always include the source URL or file path from the Observation in your FinalAnswer.\n\
+- Your FinalAnswer MUST be derived ONLY from the Observation text. Do NOT use your \
+training knowledge to supplement, correct, or override the search results — even if \
+you believe the results are wrong. The Observation reflects current real-world state.\n\
+- Use the ReAct format — one action per line:\n\
+  Thought: <your reasoning>\n\
+  ToolCall: <tool_name> {{\"arg\": \"value\"}}\n\
+  FinalAnswer: <your answer with source URL or file path>\n\
 \n\
 EXAMPLE (web search):\n\
-Thought: I need to find the current holder of this role.\n\
+Thought: I need to find current information about this.\n\
 ToolCall: web_search {{\"query\": \"current president United States 2025\"}}\n\
-Observation: Title: White House | URL: https://www.whitehouse.gov | Snippet: Donald Trump is the 47th President.\n\
-FinalAnswer: Donald Trump is the current president. Source: https://www.whitehouse.gov\n\
+[Observation returned]\n\
+FinalAnswer: <answer copied from Observation with source URL>\n\
 \n\
 EXAMPLE (local file search):\n\
 Thought: I need to find fn main in project files.\n\
 ToolCall: local_search {{\"query\": \"fn main\", \"path\": \".\"}}\n\
 [Observation returned]\n\
-FinalAnswer: Found fn main in src/main.rs:10 and src/lib.rs:5."
+FinalAnswer: Found fn main in src/main.rs:10 and src/lib.rs:5.\n\
+\n\
+Always include file paths or URLs from the Observation in your FinalAnswer."
     )
 }
 
@@ -172,7 +177,8 @@ impl SearchSpecialist {
                     let body = json!({
                         "model": model,
                         "messages": msgs,
-                        "stream": false
+                        "stream": false,
+                        "think": false
                     });
                     let raw = crate::ollama::post_json(&chat_url, body).await?;
                     let envelope: Value = serde_json::from_str(&raw)?;
@@ -230,10 +236,15 @@ mod tests {
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
     // Wrap a model content string in the Ollama non-streaming envelope.
+    // Uses serde_json::json! so newlines, quotes, and other special characters
+    // in `content` are correctly escaped — avoids the `\\n` vs `\n` trap.
     fn ollama_response(content: &str) -> String {
-        format!(
-            r#"{{"model":"m","message":{{"role":"assistant","content":"{content}"}},"done":true}}"#
-        )
+        serde_json::json!({
+            "model": "m",
+            "message": {"role": "assistant", "content": content},
+            "done": true
+        })
+        .to_string()
     }
 
     // A minimal DuckDuckGo response JSON.
@@ -244,6 +255,54 @@ mod tests {
     }
 
     // ── system prompt requirements ───────────────────────────────────────────
+    //
+    // These tests guard the three phrases/structures that were identified as
+    // critical for forcing llama3.2 to call a tool before answering. Removing
+    // any one of them caused a regression where the model answered from training
+    // data (e.g., "France" without searching). Add a test here whenever you
+    // find a new prompt phrase that is load-bearing for correct behaviour.
+
+    #[test]
+    fn system_prompt_forbids_answering_without_tool_call() {
+        // This exact phrase stops llama3.2 from skipping the tool call on
+        // questions it "knows" the answer to (e.g. geography, simple facts).
+        // Do NOT remove it — see the M7.6 regression post-mortem.
+        let prompt = search_system_prompt();
+        assert!(
+            prompt.contains("NEVER answer from your own knowledge alone"),
+            "prompt must contain 'NEVER answer from your own knowledge alone' \
+             to prevent the model from skipping tool calls on simple facts: {prompt}"
+        );
+    }
+
+    #[test]
+    fn system_prompt_includes_react_format_diagram() {
+        // The explicit Thought/ToolCall/FinalAnswer diagram is necessary for
+        // llama3.2 to produce the ReAct format reliably. Without it the model
+        // sometimes emits prose instead of structured output.
+        let prompt = search_system_prompt();
+        assert!(
+            prompt.contains("Use the ReAct format"),
+            "prompt must include 'Use the ReAct format' heading: {prompt}"
+        );
+        assert!(
+            prompt.contains("ToolCall: <tool_name>"),
+            "prompt must show the ToolCall line in the format diagram: {prompt}"
+        );
+    }
+
+    #[test]
+    fn system_prompt_example_uses_observation_placeholder() {
+        // The "[Observation returned]" placeholder in the example tells the model
+        // it must WAIT for a tool result before writing FinalAnswer. When this was
+        // replaced with an inline observation the model started skipping the tool.
+        let prompt = search_system_prompt();
+        assert!(
+            prompt.contains("[Observation returned]"),
+            "prompt example must use '[Observation returned]' placeholder \
+             to signal the model must wait for a tool result: {prompt}"
+        );
+    }
 
     #[test]
     fn system_prompt_requires_observation_only_grounding() {
@@ -311,9 +370,9 @@ mod tests {
         // First Ollama call: model issues a tool call
         Mock::given(method("POST"))
             .and(path("/api/chat"))
-            .respond_with(ResponseTemplate::new(200).set_body_string(
-                ollama_response(r#"Thought: search needed\\nToolCall: web_search {\"query\":\"capital of France\"}"#),
-            ))
+            .respond_with(ResponseTemplate::new(200).set_body_string(ollama_response(
+                "Thought: search needed\nToolCall: web_search {\"query\":\"capital of France\"}",
+            )))
             .up_to_n_times(1)
             .mount(&ollama_server)
             .await;
@@ -354,9 +413,18 @@ mod tests {
             "answer should mention Paris, got: {result}"
         );
 
-        // Token event should have been sent
-        let token = rx.try_recv().expect("expected a Token event");
-        assert!(matches!(token, AppEvent::Token(_)));
+        // A Token event must appear in the channel (may be preceded by ToolCall/ToolResult)
+        let mut found_token = false;
+        while let Ok(event) = rx.try_recv() {
+            if matches!(event, AppEvent::Token(_)) {
+                found_token = true;
+                break;
+            }
+        }
+        assert!(
+            found_token,
+            "expected at least one AppEvent::Token in the channel"
+        );
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -366,9 +434,10 @@ mod tests {
 
         Mock::given(method("POST"))
             .and(path("/api/chat"))
-            .respond_with(ResponseTemplate::new(200).set_body_string(ollama_response(
-                r#"ToolCall: web_search {\"query\":\"test\"}"#,
-            )))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_string(ollama_response("ToolCall: web_search {\"query\":\"test\"}")),
+            )
             .up_to_n_times(1)
             .mount(&ollama_server)
             .await;
@@ -423,7 +492,7 @@ mod tests {
             .and(path("/api/chat"))
             .respond_with(
                 ResponseTemplate::new(200)
-                    .set_body_string(ollama_response(r#"ToolCall: web_search {\"query\":\"q\"}"#)),
+                    .set_body_string(ollama_response("ToolCall: web_search {\"query\":\"q\"}")),
             )
             .up_to_n_times(1)
             .mount(&ollama_server)

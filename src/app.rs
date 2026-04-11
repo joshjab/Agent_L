@@ -69,7 +69,17 @@ pub struct App {
     pub token_count: usize,
     /// Actual prompt token count from the most recent Chat call (prompt_eval_count).
     /// This represents the full conversation context currently loaded in the model.
+    /// NOTE: for thinking models this includes ephemeral thinking tokens that will
+    /// be stripped from history before the next call, so the displayed value will
+    /// be higher than the real context on the next turn until that call completes.
     pub context_tokens: u32,
+    /// Thinking tokens generated in the current response (chars / 4 estimate).
+    /// Reset to 0 at the start of each new `ask_ollama()` call.
+    pub thinking_tokens: u32,
+    /// True while the stream is inside a `<think>…</think>` block.
+    in_think_tag: bool,
+    /// Lookahead buffer for tag boundary detection across Token events.
+    think_tag_buf: String,
     pub exit: bool,
     pub startup_state: StartupState,
     pub tick: usize,
@@ -89,6 +99,41 @@ impl Default for App {
     fn default() -> Self {
         Self::new()
     }
+}
+
+/// Remove `<think>...</think>` blocks from a string.
+///
+/// Thinking tokens are ephemeral reasoning produced by models like gemma4.
+/// They must be stripped from assistant messages before resending to the model
+/// so they do not accumulate in the context window across turns.
+/// An unclosed `<think>` tag causes everything from the tag to end-of-string
+/// to be discarded (handles mid-stream edge cases).
+fn strip_think_blocks(s: &str) -> String {
+    if !s.contains("<think>") {
+        return s.to_string();
+    }
+    let mut out = String::with_capacity(s.len());
+    let mut rest = s;
+    while let Some(start) = rest.find("<think>") {
+        out.push_str(&rest[..start]);
+        match rest.find("</think>") {
+            Some(end) => rest = &rest[end + "</think>".len()..],
+            None => return out, // unclosed tag — discard remainder, stop here
+        }
+    }
+    out.push_str(rest);
+    out
+}
+
+/// Returns how many trailing bytes of `buf` form a leading prefix of `tag`.
+/// Used to detect when a tag is split across two streaming token events.
+fn trailing_tag_prefix_len(buf: &str, tag: &str) -> usize {
+    for len in (1..tag.len()).rev() {
+        if buf.ends_with(&tag[..len]) {
+            return len;
+        }
+    }
+    0
 }
 
 impl App {
@@ -117,6 +162,9 @@ impl App {
             base_url: config.base_url,
             token_count: 0,
             context_tokens: 0,
+            thinking_tokens: 0,
+            in_think_tag: false,
+            think_tag_buf: String::new(),
             content_height: 0,
             terminal_height: 10,
             auto_scroll: true,
@@ -148,6 +196,9 @@ impl App {
             base_url: config.base_url,
             token_count: 0,
             context_tokens: 0,
+            thinking_tokens: 0,
+            in_think_tag: false,
+            think_tag_buf: String::new(),
             route_decision: None,
             code_scope: None,
             tx,
@@ -180,7 +231,12 @@ impl App {
             .map(|m| {
                 serde_json::json!({
                     "role": match m.role { Role::User => "user", Role::Assistant => "assistant" },
-                    "content": m.content
+                    // Strip thinking tokens from assistant messages — they are ephemeral
+                    // and must not accumulate in the context window across turns.
+                    "content": match m.role {
+                        Role::Assistant => strip_think_blocks(&m.content),
+                        Role::User => m.content.clone(),
+                    }
                 })
             })
             .collect();
@@ -192,6 +248,7 @@ impl App {
         });
 
         self.input.clear();
+        self.thinking_tokens = 0;
         self.is_loading = true;
         let tx = self.tx.clone();
         let chat_url = format!("{}/api/chat", self.base_url);
@@ -286,11 +343,55 @@ impl App {
             match event {
                 AppEvent::Token(t) => {
                     if let Some(last) = self.history.last_mut() {
-                        last.content.push_str(&t);
+                        self.think_tag_buf.push_str(&t);
                         self.token_count += 1;
+                        loop {
+                            if self.in_think_tag {
+                                if let Some(pos) = self.think_tag_buf.find("</think>") {
+                                    // Count discarded thinking chars (including the closing tag)
+                                    self.thinking_tokens +=
+                                        (pos as u32 + "</think>".len() as u32) / 4;
+                                    self.think_tag_buf =
+                                        self.think_tag_buf[pos + "</think>".len()..].to_string();
+                                    self.in_think_tag = false;
+                                } else {
+                                    // Hold back only the chars that form a trailing
+                                    // prefix of "</think>" — flush the rest as thinking.
+                                    let hold =
+                                        trailing_tag_prefix_len(&self.think_tag_buf, "</think>");
+                                    let flush = self.think_tag_buf.len() - hold;
+                                    self.thinking_tokens += flush as u32 / 4;
+                                    self.think_tag_buf = self.think_tag_buf[flush..].to_string();
+                                    break;
+                                }
+                            } else if let Some(pos) = self.think_tag_buf.find("<think>") {
+                                last.content.push_str(&self.think_tag_buf[..pos]);
+                                self.think_tag_buf =
+                                    self.think_tag_buf[pos + "<think>".len()..].to_string();
+                                self.in_think_tag = true;
+                            } else {
+                                // Hold back only the chars that form a trailing
+                                // prefix of "<think>" — flush the rest to content.
+                                let hold = trailing_tag_prefix_len(&self.think_tag_buf, "<think>");
+                                let flush = self.think_tag_buf.len() - hold;
+                                last.content.push_str(&self.think_tag_buf[..flush]);
+                                self.think_tag_buf = self.think_tag_buf[flush..].to_string();
+                                break;
+                            }
+                        }
                     }
                 }
                 AppEvent::StreamDone => {
+                    // Flush any non-think residue left in the buffer.
+                    // If still inside an unclosed <think> block, discard it silently.
+                    if let Some(last) = self.history.last_mut()
+                        && !self.in_think_tag
+                        && !self.think_tag_buf.is_empty()
+                    {
+                        last.content.push_str(&self.think_tag_buf);
+                    }
+                    self.think_tag_buf.clear();
+                    self.in_think_tag = false;
                     self.is_loading = false;
                 }
                 AppEvent::StartupUpdate(state) => {
@@ -306,6 +407,10 @@ impl App {
                 AppEvent::TokenStats { prompt, .. } => {
                     // Overwrite with the latest call's prompt_eval_count — this is
                     // the actual context size currently loaded in the model.
+                    // NOTE: for thinking models Ollama includes ephemeral thinking
+                    // tokens in prompt_eval_count, so the displayed ctx value will be
+                    // higher than the real context on the next turn until that call
+                    // completes. This is a known Ollama API limitation.
                     if prompt > 0 {
                         self.context_tokens = prompt;
                     }
@@ -664,5 +769,141 @@ mod tests {
             app.code_scope.is_none(),
             "RouteDecision should reset code_scope"
         );
+    }
+
+    // ── Token think-filter ───────────────────────────────────────────────────
+
+    fn send_tokens(app: &mut App, tokens: &[&str]) {
+        let tx = app.sender_for_test();
+        for t in tokens {
+            tx.send(AppEvent::Token(t.to_string())).unwrap();
+            app.update();
+        }
+    }
+
+    fn last_content(app: &App) -> &str {
+        app.history.last().map(|m| m.content.as_str()).unwrap_or("")
+    }
+
+    #[test]
+    fn think_block_hidden_from_content() {
+        let mut app = App::new_for_test();
+        app.history.push(ChatMessage {
+            role: Role::Assistant,
+            content: String::new(),
+        });
+        send_tokens(&mut app, &["<think>reasoning</think>answer"]);
+        app.sender_for_test().send(AppEvent::StreamDone).unwrap();
+        app.update();
+        assert_eq!(last_content(&app), "answer");
+        assert!(app.thinking_tokens > 0, "thinking_tokens should be > 0");
+    }
+
+    #[test]
+    fn think_block_split_across_tokens() {
+        let mut app = App::new_for_test();
+        app.history.push(ChatMessage {
+            role: Role::Assistant,
+            content: String::new(),
+        });
+        send_tokens(&mut app, &["<thi", "nk>thought<", "/think>real"]);
+        app.sender_for_test().send(AppEvent::StreamDone).unwrap();
+        app.update();
+        assert_eq!(last_content(&app), "real");
+        assert!(app.thinking_tokens > 0);
+    }
+
+    #[test]
+    fn content_before_think_preserved() {
+        let mut app = App::new_for_test();
+        app.history.push(ChatMessage {
+            role: Role::Assistant,
+            content: String::new(),
+        });
+        send_tokens(&mut app, &["pre<think>T</think>post"]);
+        app.sender_for_test().send(AppEvent::StreamDone).unwrap();
+        app.update();
+        assert_eq!(last_content(&app), "prepost");
+    }
+
+    #[test]
+    fn stream_done_flushes_partial_non_think_buffer() {
+        let mut app = App::new_for_test();
+        app.history.push(ChatMessage {
+            role: Role::Assistant,
+            content: String::new(),
+        });
+        // Send a token short enough to stay entirely in the lookahead buffer
+        let tx = app.sender_for_test();
+        tx.send(AppEvent::Token("ab".to_string())).unwrap();
+        app.update();
+        // Content may be empty due to lookahead; StreamDone must flush it
+        tx.send(AppEvent::StreamDone).unwrap();
+        app.update();
+        assert_eq!(last_content(&app), "ab");
+    }
+
+    #[test]
+    fn unclosed_think_at_stream_end_discarded() {
+        let mut app = App::new_for_test();
+        app.history.push(ChatMessage {
+            role: Role::Assistant,
+            content: String::new(),
+        });
+        send_tokens(&mut app, &["<think>never closed"]);
+        app.sender_for_test().send(AppEvent::StreamDone).unwrap();
+        app.update();
+        assert_eq!(last_content(&app), "");
+    }
+
+    #[test]
+    fn thinking_tokens_accumulates_across_events() {
+        let mut app = App::new_for_test();
+        app.history.push(ChatMessage {
+            role: Role::Assistant,
+            content: String::new(),
+        });
+        let long_think = format!("<think>{}</think>done", "x".repeat(100));
+        send_tokens(&mut app, &[&long_think]);
+        app.sender_for_test().send(AppEvent::StreamDone).unwrap();
+        app.update();
+        assert!(
+            app.thinking_tokens > 0,
+            "thinking_tokens should accumulate from a long think block"
+        );
+        assert_eq!(last_content(&app), "done");
+    }
+
+    // ── strip_think_blocks ───────────────────────────────────────────────────
+
+    #[test]
+    fn strip_think_no_tags_unchanged() {
+        assert_eq!(strip_think_blocks("hello world"), "hello world");
+    }
+
+    #[test]
+    fn strip_think_single_block_removed() {
+        assert_eq!(
+            strip_think_blocks("pre<think>reasoning</think>post"),
+            "prepost"
+        );
+    }
+
+    #[test]
+    fn strip_think_multiple_blocks_removed() {
+        assert_eq!(
+            strip_think_blocks("<think>A</think>middle<think>B</think>end"),
+            "middleend"
+        );
+    }
+
+    #[test]
+    fn strip_think_unclosed_discards_tail() {
+        assert_eq!(strip_think_blocks("text<think>never closed"), "text");
+    }
+
+    #[test]
+    fn strip_think_empty_string() {
+        assert_eq!(strip_think_blocks(""), "");
     }
 }

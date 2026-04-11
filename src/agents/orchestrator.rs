@@ -3,6 +3,24 @@ use serde_json::{Value, json};
 
 use crate::agents::{Agent, schema::ParseError};
 
+/// Remove a leading ` ```json ` / ` ``` ` code fence and trailing ` ``` ` if
+/// present. Some models (e.g. gemma4) wrap their JSON output in markdown code
+/// fences even when instructed to return raw JSON.
+fn strip_code_fence(s: &str) -> std::borrow::Cow<'_, str> {
+    let trimmed = s.trim();
+    let inner = trimmed
+        .strip_prefix("```json")
+        .or_else(|| trimmed.strip_prefix("```"))
+        .map(|s| s.trim_start());
+    match inner {
+        Some(rest) => {
+            let stripped = rest.strip_suffix("```").unwrap_or(rest).trim();
+            std::borrow::Cow::Owned(stripped.to_string())
+        }
+        None => std::borrow::Cow::Borrowed(s),
+    }
+}
+
 /// The high-level category of what the user wants.
 ///
 /// Agent L classifies every incoming message into one of these buckets before
@@ -41,6 +59,8 @@ pub struct PlanStep {
     /// Which specialist to invoke for this step.
     pub agent: AgentKind,
     /// Human-readable description of what this step should accomplish.
+    /// Some models use "instruction" — accepted as an alias.
+    #[serde(alias = "instruction", default)]
     pub task: String,
     /// Optional index into the parent `steps` array whose output feeds into
     /// this step as additional context. `None` means no dependency.
@@ -52,6 +72,8 @@ pub struct PlanStep {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct TaskPlan {
     pub intent_type: IntentType,
+    /// Some models emit "plan" instead of "steps" — accepted as an alias.
+    #[serde(alias = "plan")]
     pub steps: Vec<PlanStep>,
 }
 
@@ -199,6 +221,7 @@ impl Agent for OrchestratorAgent {
             "model": self.model,
             "messages": messages,
             "stream": false,
+            "think": false,
             "format": task_plan_schema()
         })
     }
@@ -217,7 +240,11 @@ impl Agent for OrchestratorAgent {
                 ),
             })?;
 
-        let plan: TaskPlan = serde_json::from_str(content).map_err(|e| ParseError {
+        // Some models wrap their JSON output in a ```json ... ``` code fence.
+        // Strip it before parsing so the deserializer sees raw JSON.
+        let content = strip_code_fence(content);
+
+        let plan: TaskPlan = serde_json::from_str(&content).map_err(|e| ParseError {
             message: format!("task plan JSON is invalid: {e} (content: {content:?})"),
         })?;
 
@@ -449,6 +476,7 @@ mod tests {
         let req = agent().prompt(&[], None);
         assert_eq!(req["model"], "test-model");
         assert_eq!(req["stream"], false);
+        assert_eq!(req["think"], false);
         assert!(
             req["format"].is_object(),
             "format field should be a JSON schema object"
@@ -622,5 +650,56 @@ mod tests {
             "got: {}",
             err.message
         );
+    }
+
+    // ── gemma4 / code-fence robustness ───────────────────────────────────────
+
+    #[test]
+    fn parse_accepts_code_fenced_json() {
+        // gemma4 wraps its JSON output in ```json ... ``` code fences
+        let fenced = "```json\n{\"intent_type\":\"Factual\",\"steps\":[{\"agent\":\"Search\",\"task\":\"find it\"}]}\n```";
+        let raw = json!({ "message": { "content": fenced } }).to_string();
+        let plan = agent().parse(&raw).unwrap();
+        assert_eq!(plan.intent_type, IntentType::Factual);
+        assert_eq!(plan.steps[0].agent, AgentKind::Search);
+    }
+
+    #[test]
+    fn parse_accepts_plan_field_alias() {
+        // gemma4 sometimes uses "plan" instead of "steps"
+        let content =
+            r#"{"intent_type":"Conversational","plan":[{"agent":"Chat","task":"reply"}]}"#;
+        let raw = json!({ "message": { "content": content } }).to_string();
+        let plan = agent().parse(&raw).unwrap();
+        assert_eq!(plan.intent_type, IntentType::Conversational);
+        assert_eq!(plan.steps[0].agent, AgentKind::Chat);
+    }
+
+    #[test]
+    fn parse_accepts_instruction_field_alias() {
+        // gemma4 sometimes uses "instruction" instead of "task"
+        let content =
+            r#"{"intent_type":"Task","steps":[{"agent":"Code","instruction":"write a script"}]}"#;
+        let raw = json!({ "message": { "content": content } }).to_string();
+        let plan = agent().parse(&raw).unwrap();
+        assert_eq!(plan.steps[0].task, "write a script");
+    }
+
+    #[test]
+    fn strip_code_fence_removes_json_fence() {
+        let fenced = "```json\n{\"key\":\"val\"}\n```";
+        assert_eq!(strip_code_fence(fenced), "{\"key\":\"val\"}");
+    }
+
+    #[test]
+    fn strip_code_fence_removes_plain_fence() {
+        let fenced = "```\n{\"key\":\"val\"}\n```";
+        assert_eq!(strip_code_fence(fenced), "{\"key\":\"val\"}");
+    }
+
+    #[test]
+    fn strip_code_fence_no_fence_unchanged() {
+        let s = "{\"key\":\"val\"}";
+        assert_eq!(strip_code_fence(s), s);
     }
 }

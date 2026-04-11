@@ -82,6 +82,7 @@ impl Agent for ScopeDetector {
             "model": self.model,
             "messages": messages,
             "stream": false,
+            "think": false,
             "format": scope_schema()
         })
     }
@@ -302,6 +303,7 @@ mod tests {
         let req = agent().prompt(&[], None);
         assert_eq!(req["model"], "test-model");
         assert_eq!(req["stream"], false);
+        assert_eq!(req["think"], false);
         assert!(
             req["format"].is_object(),
             "format should be a JSON schema object"

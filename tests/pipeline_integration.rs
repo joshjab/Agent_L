@@ -192,13 +192,33 @@ async fn multistep_plan_with_depends_on_runs_all_steps() {
 // ── Search plan uses SearchSpecialist (not Chat fallback) ────────────────────
 
 // SearchSpecialist calls Ollama in non-streaming mode (envelope format).
-// If the model returns FinalAnswer immediately (no ToolCall), DDG is never
-// called — so this test works without a real network connection.
+// Uses local_search (no network call) so the test works without external
+// connections. The executor now requires at least one tool call before
+// accepting a FinalAnswer, so the mock simulates the full ReAct flow:
+// ToolCall → Observation → FinalAnswer.
 #[tokio::test(flavor = "multi_thread")]
 async fn search_only_plan_calls_search_specialist() {
     let server = MockServer::start().await;
-    // Non-streaming Ollama response: the model immediately returns a FinalAnswer
-    // (no ToolCall) so DDG is never contacted.
+
+    // First Ollama call: model calls local_search (no network needed).
+    Mock::given(method("POST"))
+        .and(path("/api/chat"))
+        .respond_with(ResponseTemplate::new(200).set_body_string(
+            serde_json::json!({
+                "model": "m",
+                "message": {"role": "assistant", "content": "ToolCall: local_search {\"query\":\"capital of France\",\"path\":\".\"}"},
+                "done": true
+            })
+            .to_string(),
+        ))
+        .up_to_n_times(1)
+        .mount(&server)
+        .await;
+
+    // Second Ollama call: model gives the final answer after seeing the
+    // local_search observation (which will say "No results found" since
+    // the project files don't mention the capital of France — that's fine;
+    // the test only checks that SearchSpecialist is used, not the content).
     Mock::given(method("POST"))
         .and(path("/api/chat"))
         .respond_with(ResponseTemplate::new(200).set_body_string(
@@ -236,8 +256,8 @@ async fn search_only_plan_calls_search_specialist() {
         tokens.contains("Paris"),
         "expected Search answer, got: {tokens}"
     );
-    // SearchSpecialist calls Ollama once (FinalAnswer on first step)
-    assert_eq!(server.received_requests().await.unwrap().len(), 1);
+    // SearchSpecialist calls Ollama twice: ToolCall round + FinalAnswer round.
+    assert_eq!(server.received_requests().await.unwrap().len(), 2);
 }
 
 // ── Unknown specialist falls back to Chat ─────────────────────────────────────

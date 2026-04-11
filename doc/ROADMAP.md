@@ -419,6 +419,33 @@ With Ollama running and `TAVILY_API_KEY` set:
 
 ---
 
+## M7.6.1 — gemma4 Thinking Model Support
+
+Switch to gemma4 which produces `<think>...</think>` reasoning tokens. Two problems solved:
+1. Internal classification/compression calls waste time generating thinking tokens they don't need.
+2. Thinking content accumulates in history and inflates context; `estimate_tokens` over-counted it.
+
+### Tasks
+
+- [x] Add `"think": false` to all internal non-streaming calls (orchestrator, compressor, ScopeDetector, ReAct loop) so they skip thinking.
+- [x] Strip `<think>...</think>` from assistant messages when building `raw_messages` for next turn — prevents thinking tokens from re-entering context.
+- [x] Fix `estimate_tokens` in `compression.rs` to strip think blocks before char-counting — prevents premature compression triggers.
+- [x] Add streaming think-filter in `App::update()` Token arm — hides `<think>` content from chat view in real time, accumulates `thinking_tokens` count.
+- [x] Show `think: N` (magenta, dim) in status line when `thinking_tokens > 0`.
+- [x] Add `strip_code_fence` helper in `orchestrator.rs` + serde aliases for `"plan"`/`"instruction"` fields — fixes gemma4's non-standard JSON output.
+
+### Verification ✅
+
+```bash
+cargo check && cargo clippy -- -D warnings && cargo test && cargo fmt --check
+cargo test --test live_pipeline -- --ignored --nocapture
+```
+
+✅ All tests pass. 11/11 live tests pass with gemma4. Zero warnings, zero clippy errors, fmt clean.
+`<think>` content does not appear in chat view. `think: N` shows in status line after responses.
+
+---
+
 ## M7.7 — UI: Clickable Source Links (ratatui 0.31 upgrade)
 
 Right now, search responses show a `[source]` label where the URL used to be. The label is

@@ -35,6 +35,16 @@ ok "Fast suite passed."
 
 # ── 2. Live suite (runs when Ollama is reachable) ────────────────────────────
 
+# Load .env so OLLAMA_HOST/PORT/MODEL reflect the project config rather than
+# falling back to hardcoded defaults when the shell has no env vars set.
+if [ -f .env ]; then
+    # Export only simple KEY=VALUE lines; skip comments and blank lines.
+    set -a
+    # shellcheck disable=SC1091
+    source .env
+    set +a
+fi
+
 OLLAMA_HOST="${OLLAMA_HOST:-localhost}"
 OLLAMA_PORT="${OLLAMA_PORT:-11434}"
 

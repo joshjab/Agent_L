@@ -9,10 +9,15 @@ use wiremock::{Mock, MockServer, ResponseTemplate};
 // ── helpers ───────────────────────────────────────────────────────────────────
 
 /// Wrap content in an Ollama non-streaming response envelope.
+/// Uses serde_json::json! so newlines, quotes, and other special characters
+/// in `content` are correctly escaped — avoids the `\\n` vs `\n` trap.
 fn ollama_resp(content: &str) -> String {
-    // Escape backslashes and quotes so the JSON string is valid
-    let escaped = content.replace('\\', "\\\\").replace('"', "\\\"");
-    format!(r#"{{"model":"m","message":{{"role":"assistant","content":"{escaped}"}},"done":true}}"#)
+    serde_json::json!({
+        "model": "m",
+        "message": {"role": "assistant", "content": content},
+        "done": true
+    })
+    .to_string()
 }
 
 fn ddg_resp(abstract_text: &str, url: &str) -> String {
@@ -30,11 +35,11 @@ async fn search_returns_citation_not_prose() {
     let ollama = MockServer::start().await;
     let ddg = MockServer::start().await;
 
-    // Step 1: model issues a tool call
+    // Step 1: model issues a tool call (real newline between Thought and ToolCall)
     Mock::given(method("POST"))
         .and(path("/api/chat"))
         .respond_with(ResponseTemplate::new(200).set_body_string(ollama_resp(
-            r#"Thought: I need to search\nToolCall: web_search {"query":"capital of France"}"#,
+            "Thought: I need to search\nToolCall: web_search {\"query\":\"capital of France\"}",
         )))
         .up_to_n_times(1)
         .mount(&ollama)
@@ -78,9 +83,18 @@ async fn search_returns_citation_not_prose() {
         "answer should mention Paris, got: {answer}"
     );
 
-    // Token event must have been sent
-    let event = rx.try_recv().expect("expected a Token event");
-    assert!(matches!(event, AppEvent::Token(_)));
+    // A Token event must appear in the channel (may be preceded by ToolCall/ToolResult)
+    let mut found_token = false;
+    while let Ok(event) = rx.try_recv() {
+        if matches!(event, AppEvent::Token(_)) {
+            found_token = true;
+            break;
+        }
+    }
+    assert!(
+        found_token,
+        "expected at least one AppEvent::Token in the channel"
+    );
 }
 
 /// When run via run_plan, a Search step must produce tokens (not fall back to

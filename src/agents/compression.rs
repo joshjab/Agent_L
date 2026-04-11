@@ -11,13 +11,36 @@ pub const SUMMARY_TAG: &str = "[Context Summary]";
 
 /// Rough token estimate: total character count of all message `content` fields
 /// divided by 4 (1 token ≈ 4 characters).
+///
+/// `<think>...</think>` blocks are stripped before counting — thinking tokens
+/// are ephemeral and will not be in the context on the next turn.
 pub fn estimate_tokens(messages: &[Value]) -> usize {
     messages
         .iter()
         .filter_map(|m| m.get("content")?.as_str())
-        .map(|s| s.len())
+        .map(|s| strip_think_for_estimate(s).len())
         .sum::<usize>()
         / 4
+}
+
+/// Strip `<think>...</think>` blocks before char-counting.
+/// Same logic as `strip_think_blocks` in `app.rs`.
+/// Duplicated here to avoid a shared-module dependency for one small function.
+fn strip_think_for_estimate(s: &str) -> std::borrow::Cow<'_, str> {
+    if !s.contains("<think>") {
+        return std::borrow::Cow::Borrowed(s);
+    }
+    let mut out = String::with_capacity(s.len());
+    let mut rest = s;
+    while let Some(start) = rest.find("<think>") {
+        out.push_str(&rest[..start]);
+        match rest.find("</think>") {
+            Some(end) => rest = &rest[end + "</think>".len()..],
+            None => return std::borrow::Cow::Owned(out), // unclosed — discard tail
+        }
+    }
+    out.push_str(rest);
+    std::borrow::Cow::Owned(out)
 }
 
 /// Compresses old conversation history by summarising the oldest turns into a
@@ -65,6 +88,7 @@ impl Compressor {
         json!({
             "model": model,
             "stream": false,
+            "think": false,
             "messages": [
                 {
                     "role": "system",
@@ -198,6 +222,23 @@ mod tests {
         assert_eq!(estimate_tokens(&msgs), 0);
     }
 
+    #[test]
+    fn estimate_tokens_ignores_think_blocks() {
+        // <think>...</think> content must not count toward the estimate because
+        // it is stripped from history before the next turn.
+        let think_heavy = "<think>".to_string() + &"x".repeat(400) + "</think>real";
+        let msgs = vec![assistant_msg(&think_heavy)];
+        // Only "real" (4 chars) counts → 4/4 = 1 token
+        assert_eq!(estimate_tokens(&msgs), 1);
+    }
+
+    #[test]
+    fn estimate_tokens_no_think_blocks_unchanged() {
+        // Without <think> blocks, behaviour matches the original char/4 logic
+        let msgs = vec![user_msg("abcd"), assistant_msg("efgh")];
+        assert_eq!(estimate_tokens(&msgs), 2);
+    }
+
     // ── Compressor::new / with_params ────────────────────────────────────────
 
     #[test]
@@ -223,6 +264,7 @@ mod tests {
         let req = c.build_summary_prompt(&turns, "mymodel");
         assert_eq!(req["model"], "mymodel");
         assert_eq!(req["stream"], false);
+        assert_eq!(req["think"], false);
     }
 
     #[test]

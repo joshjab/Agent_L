@@ -68,6 +68,15 @@ impl Widget for &App {
                     .add_modifier(Modifier::BOLD),
             ),
         ];
+        if self.thinking_tokens > 0 {
+            status_spans.push(" | think: ".into());
+            status_spans.push(Span::styled(
+                self.thinking_tokens.to_string(),
+                Style::default()
+                    .fg(Color::Magenta)
+                    .add_modifier(Modifier::DIM),
+            ));
+        }
         if let Some(plan) = &self.route_decision {
             status_spans.push(" | ".into());
             status_spans.push(Span::styled(
@@ -765,6 +774,57 @@ mod tests {
         assert!(
             !all_content.contains("https://"),
             "raw URL must not appear in rendered output"
+        );
+    }
+
+    // ── status line: thinking token display ──────────────────────────────────
+
+    fn render_status(app: &App) -> String {
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+        let backend = TestBackend::new(120, 10);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|f| {
+                f.render_widget(app, f.area());
+            })
+            .unwrap();
+        let buf = terminal.backend().buffer().clone();
+        // Collect all cells from the last row (status line)
+        let last_row = buf.area.height - 1;
+        (0..buf.area.width)
+            .map(|x| {
+                buf.cell((x, last_row))
+                    .map(|c| c.symbol().to_string())
+                    .unwrap_or_default()
+            })
+            .collect::<String>()
+            .trim()
+            .to_string()
+    }
+
+    #[test]
+    fn status_shows_think_count_when_nonzero() {
+        let mut app = App::new_for_test();
+        app.thinking_tokens = 42;
+        let status = render_status(&app);
+        assert!(
+            status.contains("think"),
+            "status should contain 'think' when thinking_tokens > 0, got: {status:?}"
+        );
+        assert!(
+            status.contains("42"),
+            "status should contain the thinking token count, got: {status:?}"
+        );
+    }
+
+    #[test]
+    fn status_hides_think_count_when_zero() {
+        let app = App::new_for_test();
+        let status = render_status(&app);
+        assert!(
+            !status.contains("think:"),
+            "status should not show think count when thinking_tokens == 0, got: {status:?}"
         );
     }
 }
