@@ -245,24 +245,41 @@ impl Tool for LocalSearchTool {
             .as_str()
             .ok_or_else(|| "missing 'path' argument".to_string())?;
 
+        // List directory contents first so the model knows what files are
+        // available before seeing grep results — helps it cite correct paths.
+        let dir_listing = if std::path::Path::new(path).is_dir() {
+            let ls = std::process::Command::new("ls")
+                .args(["-1", path])
+                .output()
+                .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
+                .unwrap_or_default();
+            format!("Directory listing of {path}:\n{ls}\n")
+        } else {
+            String::new()
+        };
+
         let output = std::process::Command::new("grep")
             .args(["-rn", "--max-count=20", query, path])
             .output()
             .map_err(|e| format!("failed to run grep: {e}"))?;
 
         // grep exits 1 when no matches found — that is not an error.
-        if output.status.code() == Some(1) || output.stdout.is_empty() {
-            return Ok("No matches found.".into());
-        }
-
-        if !output.status.success() && output.status.code() != Some(1) {
+        let grep_result = if output.status.code() == Some(1) || output.stdout.is_empty() {
+            "No matches found.".to_string()
+        } else if !output.status.success() && output.status.code() != Some(1) {
             let stderr = String::from_utf8_lossy(&output.stderr);
             return Err(format!("grep error: {stderr}"));
-        }
+        } else {
+            String::from_utf8_lossy(&output.stdout).into_owned()
+        };
 
-        let raw = String::from_utf8_lossy(&output.stdout);
+        let combined = format!("{dir_listing}Search results for '{query}':\n{grep_result}");
         const MAX: usize = 2000;
-        let trimmed = if raw.len() > MAX { &raw[..MAX] } else { &raw };
+        let trimmed = if combined.len() > MAX {
+            &combined[..MAX]
+        } else {
+            &combined
+        };
         Ok(trimmed.to_string())
     }
 }
@@ -531,7 +548,35 @@ mod tests {
         let result = tool
             .execute(&json!({"query": "xyzzy_no_match", "path": dir.path().to_str().unwrap()}))
             .unwrap();
-        assert_eq!(result, "No matches found.");
+        assert!(
+            result.contains("No matches found."),
+            "expected 'No matches found.' in result, got: {result}"
+        );
+    }
+
+    #[test]
+    fn local_search_includes_directory_listing() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("main.rs"), "fn main() {}\n").unwrap();
+        std::fs::write(dir.path().join("lib.rs"), "pub fn helper() {}\n").unwrap();
+
+        let tool = LocalSearchTool;
+        let result = tool
+            .execute(&json!({"query": "fn main", "path": dir.path().to_str().unwrap()}))
+            .unwrap();
+        // Directory listing must appear before grep results
+        assert!(
+            result.contains("Directory listing"),
+            "result should include directory listing, got: {result}"
+        );
+        assert!(
+            result.contains("main.rs"),
+            "directory listing should include main.rs, got: {result}"
+        );
+        assert!(
+            result.contains("Search results"),
+            "result should include search results header, got: {result}"
+        );
     }
 
     #[test]

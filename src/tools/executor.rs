@@ -107,6 +107,10 @@ where
     Fut: std::future::Future<Output = Result<String, Box<dyn std::error::Error>>>,
 {
     let mut messages = initial_messages;
+    // Tracks whether any tool has been called across all loop iterations.
+    // A FinalAnswer produced before the first tool observation is premature
+    // (the model is answering from training data) and must be rejected.
+    let mut tool_ever_called = false;
 
     for step in 0..max_steps {
         let response = prompt_fn(messages.clone())
@@ -123,13 +127,24 @@ where
         let mut final_answer: Option<String> = None;
         let mut observations: Vec<String> = Vec::new();
 
-        for line in response.lines() {
+        let response_lines: Vec<&str> = response.lines().collect();
+        for (idx, line) in response_lines.iter().enumerate() {
             match parse_react_line(line.trim()) {
-                Some(ReActStep::FinalAnswer(ans)) => {
+                Some(ReActStep::FinalAnswer(first)) => {
+                    // Capture all lines after "FinalAnswer: ..." as part of the
+                    // answer — the model sometimes puts file paths or list items
+                    // on subsequent lines rather than inline on the same line.
+                    let tail = response_lines[idx + 1..].join("\n");
+                    let ans = if tail.trim().is_empty() {
+                        first
+                    } else {
+                        format!("{first}\n{tail}")
+                    };
                     final_answer = Some(ans);
                     break;
                 }
                 Some(ReActStep::ToolCall { name, args }) => {
+                    tool_ever_called = true;
                     // Notify observers that a tool is about to execute.
                     if let Some(tx) = &event_tx {
                         let _ = tx.send(AppEvent::ToolCall {
@@ -175,15 +190,31 @@ where
             }
         }
 
-        // A FinalAnswer is only accepted when no tool calls were made in this
-        // same response. If the model emits both a ToolCall and a FinalAnswer
-        // in one turn, the FinalAnswer is premature (the model hasn't yet seen
-        // the search result) and must be discarded. The observation is injected
-        // and the model will produce a grounded FinalAnswer in the next round.
+        // A FinalAnswer is only accepted when:
+        //   (a) no tool calls were made in THIS response (ToolCall+FinalAnswer
+        //       in the same turn means the FinalAnswer is premature), AND
+        //   (b) at least one tool was called somewhere in the conversation
+        //       (a bare FinalAnswer on the very first response means the model
+        //       is answering from training data without searching).
+        //
+        // If neither condition holds, inject a correction and continue.
         if observations.is_empty()
             && let Some(ans) = final_answer
         {
-            return Ok(ans);
+            // When no tools are registered at all there is nothing to call, so
+            // accept the FinalAnswer immediately. When tools ARE registered the
+            // model must use at least one before answering.
+            if tool_ever_called || tools.is_empty() {
+                return Ok(ans);
+            }
+            // Model skipped the tool — inject a correction and loop again.
+            messages.push(json!({
+                "role": "user",
+                "content": "You MUST call a tool before giving a FinalAnswer. \
+                            Do NOT answer from your own knowledge. \
+                            Call web_search now with a relevant query."
+            }));
+            continue;
         }
 
         // Append all tool observations as user messages for the next iteration.
@@ -204,7 +235,7 @@ where
                  Observation. Do NOT use your training knowledge. Do NOT change or override \
                  the Observation content, even if it contradicts what you believe.\n\n\
                  Your next output MUST be:\n\
-                 FinalAnswer: <answer copied directly from the Observation, with source URL>"
+                 FinalAnswer: <answer copied directly from the Observation, with source URL or file path>"
             );
             messages.push(json!({"role": "user", "content": content}));
         }
@@ -216,16 +247,30 @@ where
     })
 }
 
-/// Extract the first `Snippet: <text>` line from a formatted observation.
-/// Used to quote the key search finding back to the model in the injection
-/// message so it cannot be overridden by training knowledge.
+/// Extract the first quotable finding from a formatted observation.
+///
+/// Tries two formats in order:
+/// 1. `Snippet: <text>` — from web_search (DDG/Tavily formatted results)
+/// 2. `file:line:content` — from local_search (raw grep output)
+///
+/// Used to quote the key finding back to the model in the injection message
+/// so it cannot be paraphrased away from training knowledge.
 fn extract_first_snippet(obs: &str) -> Option<&str> {
+    let mut grep_candidate: Option<&str> = None;
     for line in obs.lines() {
         if let Some(snippet) = line.strip_prefix("Snippet: ") {
             return Some(snippet.trim());
         }
+        // Grep output: path:linenum:content — at least two colons, second
+        // component must be a decimal line number.
+        if grep_candidate.is_none() {
+            let parts: Vec<&str> = line.splitn(3, ':').collect();
+            if parts.len() == 3 && parts[1].trim().parse::<u32>().is_ok() {
+                grep_candidate = Some(line.trim());
+            }
+        }
     }
-    None
+    grep_candidate
 }
 
 /// Build an observation string from a tool result, enriched with exit-code and
@@ -282,6 +327,17 @@ mod tests {
     fn extract_first_snippet_returns_none_when_absent() {
         let obs = "Title: Foo\nURL: https://example.com";
         assert_eq!(extract_first_snippet(obs), None);
+    }
+
+    #[test]
+    fn extract_first_snippet_handles_grep_style_output() {
+        let obs = "[exit:0] Directory listing of .:\nsrc\n\nSearch results for 'fn main':\nsrc/main.rs:5:fn main() {\nsrc/lib.rs:3:// fn main\n";
+        let snippet = extract_first_snippet(obs);
+        assert_eq!(
+            snippet,
+            Some("src/main.rs:5:fn main() {"),
+            "should extract first grep match as snippet"
+        );
     }
 
     // ── build_observation ────────────────────────────────────────────────────
@@ -404,6 +460,36 @@ mod tests {
     // ── execute_react_loop ───────────────────────────────────────────────────
 
     #[tokio::test]
+    async fn loop_captures_multiline_final_answer() {
+        // Model puts file paths on lines after "FinalAnswer: ..." — all must be
+        // captured, not just the first line.
+        let tools: HashMap<&str, &dyn Tool> = HashMap::new();
+
+        let result = execute_react_loop(
+            vec![json!({"role": "user", "content": "find fn main"})],
+            &tools,
+            |_msgs| async {
+                Ok::<String, Box<dyn std::error::Error>>(
+                    "FinalAnswer: Found fn main in:\nsrc/main.rs:5:fn main() {\nsrc/lib.rs:3:fn main() {}".into(),
+                )
+            },
+            None,
+            MAX_STEPS,
+        )
+        .await
+        .unwrap();
+
+        assert!(
+            result.contains("src/main.rs"),
+            "multi-line FinalAnswer must include lines after the prefix, got: {result}"
+        );
+        assert!(
+            result.contains("src/lib.rs"),
+            "multi-line FinalAnswer must include all subsequent lines, got: {result}"
+        );
+    }
+
+    #[tokio::test]
     async fn loop_returns_final_answer_on_success() {
         let tools: HashMap<&str, &dyn Tool> = HashMap::new();
 
@@ -452,6 +538,63 @@ mod tests {
 
         assert_eq!(result, "got mock result");
         assert_eq!(*calls.lock().unwrap(), 2);
+    }
+
+    /// When the model emits a bare FinalAnswer on the very first call (no tool
+    /// ever called), the executor must reject it and inject a correction message
+    /// so the model is forced to call a tool on the next round. Only after an
+    /// Observation has been produced may a FinalAnswer be accepted.
+    #[tokio::test]
+    async fn bare_final_answer_before_any_tool_call_is_rejected() {
+        let ok_tool = AlwaysOkTool { name: "ok_tool" };
+        let mut tools: HashMap<&str, &dyn Tool> = HashMap::new();
+        tools.insert("ok_tool", &ok_tool);
+
+        let calls = std::sync::Arc::new(std::sync::Mutex::new(0u32));
+        let calls_clone = calls.clone();
+
+        let result = execute_react_loop(
+            vec![json!({"role": "user", "content": "answer me"})],
+            &tools,
+            move |_msgs| {
+                let mut c = calls_clone.lock().unwrap();
+                *c += 1;
+                let n = *c;
+                async move {
+                    match n {
+                        1 => {
+                            // Model skips the tool on first call — bare FinalAnswer
+                            Ok::<String, Box<dyn std::error::Error>>(
+                                "FinalAnswer: from training data, no tool".into(),
+                            )
+                        }
+                        2 => {
+                            // After correction injection, model calls a tool
+                            Ok("ToolCall: ok_tool {}".into())
+                        }
+                        _ => {
+                            // After observation, model gives grounded answer
+                            Ok("FinalAnswer: grounded answer from observation".into())
+                        }
+                    }
+                }
+            },
+            None,
+            MAX_STEPS,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(
+            result, "grounded answer from observation",
+            "bare FinalAnswer before any tool call must be rejected; \
+             answer must come from post-observation round"
+        );
+        assert_eq!(
+            *calls.lock().unwrap(),
+            3,
+            "loop must run 3 rounds: (1) bare answer rejected, (2) tool called, (3) grounded answer"
+        );
     }
 
     #[tokio::test]
