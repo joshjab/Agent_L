@@ -1,5 +1,7 @@
 use serde_json::{Value, json};
 
+use crate::prompts;
+
 pub const DEFAULT_PERSONA_PROMPT: &str = "You are Agent-L, a local personal assistant \
 running entirely on your device. You are helpful, concise, and direct. \
 IMPORTANT: You have a knowledge cutoff and cannot reliably answer questions about \
@@ -32,7 +34,7 @@ impl Persona {
     /// used as the system prompt. Otherwise falls back to [`DEFAULT_PERSONA_PROMPT`].
     pub fn new() -> Self {
         let system_prompt = std::env::var("PERSONA_SYSTEM_PROMPT")
-            .unwrap_or_else(|_| DEFAULT_PERSONA_PROMPT.to_string());
+            .unwrap_or_else(|_| prompts::load("persona", DEFAULT_PERSONA_PROMPT));
         Self { system_prompt }
     }
 
@@ -55,7 +57,8 @@ impl Persona {
     /// The reminder is a `{"role": "system", "content": GOAL_REMINDER_TEXT}` value.
     pub fn goal_reminder_if_needed(&self, turn_count: usize) -> Option<Value> {
         if turn_count > 0 && turn_count.is_multiple_of(GOAL_REMINDER_INTERVAL) {
-            Some(json!({"role": "system", "content": GOAL_REMINDER_TEXT}))
+            let reminder = prompts::load("persona_goal_reminder", GOAL_REMINDER_TEXT);
+            Some(json!({"role": "system", "content": reminder}))
         } else {
             None
         }

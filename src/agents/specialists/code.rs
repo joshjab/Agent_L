@@ -6,6 +6,7 @@ use tokio::sync::mpsc;
 
 use crate::agents::{Agent, schema::ParseError};
 use crate::app::AppEvent;
+use crate::prompts;
 use crate::tools::claude_code::ClaudeCodeInvoker;
 
 /// Whether a code task is a small self-contained script or a change to an
@@ -33,7 +34,7 @@ fn scope_schema() -> Value {
     })
 }
 
-const SCOPE_SYSTEM_PROMPT: &str = "\
+const SCOPE_FALLBACK: &str = "\
 You are a code task classifier. Given a description of a coding task, decide \
 whether it is a self-contained one-off script/snippet that can run in a fresh \
 temporary directory, or whether it requires modifying an existing project.
@@ -64,7 +65,8 @@ impl Agent for ScopeDetector {
 
     fn prompt(&self, context: &[Value], error_feedback: Option<&ParseError>) -> Value {
         // context[0] is the task description the Code specialist passes in
-        let mut messages = vec![json!({ "role": "system", "content": SCOPE_SYSTEM_PROMPT })];
+        let scope_prompt = prompts::load("code_scope", SCOPE_FALLBACK);
+        let mut messages = vec![json!({ "role": "system", "content": scope_prompt })];
         messages.extend_from_slice(context);
 
         if let Some(err) = error_feedback {

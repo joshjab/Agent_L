@@ -2,6 +2,7 @@ mod agents;
 mod app;
 mod config;
 mod ollama;
+mod prompts;
 mod startup;
 mod tools;
 mod ui;

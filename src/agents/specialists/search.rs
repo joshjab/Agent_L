@@ -5,6 +5,7 @@ use serde_json::{Value, json};
 use tokio::sync::mpsc;
 
 use crate::app::AppEvent;
+use crate::prompts;
 use crate::tools::Tool;
 use crate::tools::executor::{MAX_STEPS, execute_react_loop};
 use crate::tools::search_tools::{LocalSearchTool, WebSearchTool};
@@ -59,20 +60,16 @@ fn utc_now() -> String {
     format!("{year}-{month:02}-{} {hour:02}:{minute:02} UTC", days + 1)
 }
 
-/// Build the search specialist system prompt, injecting the current UTC datetime
-/// so the model can answer time/date queries accurately and flag stale sources.
-fn search_system_prompt() -> String {
-    let now = utc_now();
-    format!(
-        "You are a search specialist. Find accurate, factual information using the \
+const SEARCH_FALLBACK: &str = "\
+You are a search specialist. Find accurate, factual information using the \
 tools available to you.\n\
 \n\
 Current date and time (UTC): {now}. If a source looks outdated relative to today, \
 note that in your answer.\n\
 \n\
 AVAILABLE TOOLS (you MUST use one before answering):\n\
-- web_search {{\"query\": \"...\"}} — search the web for current information\n\
-- local_search {{\"query\": \"...\", \"path\": \".\"}} — grep local project files\n\
+- web_search {\"query\": \"...\"} — search the web for current information\n\
+- local_search {\"query\": \"...\", \"path\": \".\"} — grep local project files\n\
 \n\
 RULES:\n\
 - You MUST call at least one tool before giving a FinalAnswer. NEVER answer from \
@@ -84,23 +81,28 @@ training knowledge to supplement, correct, or override the search results — ev
 you believe the results are wrong. The Observation reflects current real-world state.\n\
 - Use the ReAct format — one action per line:\n\
   Thought: <your reasoning>\n\
-  ToolCall: <tool_name> {{\"arg\": \"value\"}}\n\
+  ToolCall: <tool_name> {\"arg\": \"value\"}\n\
   FinalAnswer: <your answer with source URL or file path>\n\
 \n\
 EXAMPLE (web search):\n\
 Thought: I need to find current information about this.\n\
-ToolCall: web_search {{\"query\": \"current president United States 2025\"}}\n\
+ToolCall: web_search {\"query\": \"current president United States 2025\"}\n\
 [Observation returned]\n\
 FinalAnswer: <answer copied from Observation with source URL>\n\
 \n\
 EXAMPLE (local file search):\n\
 Thought: I need to find fn main in project files.\n\
-ToolCall: local_search {{\"query\": \"fn main\", \"path\": \".\"}}\n\
+ToolCall: local_search {\"query\": \"fn main\", \"path\": \".\"}\n\
 [Observation returned]\n\
 FinalAnswer: Found fn main in src/main.rs:10 and src/lib.rs:5.\n\
 \n\
-Always include file paths or URLs from the Observation in your FinalAnswer."
-    )
+Always include file paths or URLs from the Observation in your FinalAnswer.";
+
+/// Build the search specialist system prompt, injecting the current UTC datetime
+/// so the model can answer time/date queries accurately and flag stale sources.
+fn search_system_prompt() -> String {
+    let now = utc_now();
+    prompts::load_with("search", SEARCH_FALLBACK, &[("now", &now)])
 }
 
 /// Handles Factual intent queries by calling search tools and returning

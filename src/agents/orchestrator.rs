@@ -2,6 +2,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 use crate::agents::{Agent, schema::ParseError};
+use crate::prompts;
 
 /// Remove a leading ` ```json ` / ` ``` ` code fence and trailing ` ``` ` if
 /// present. Some models (e.g. gemma4) wrap their JSON output in markdown code
@@ -150,7 +151,7 @@ fn task_plan_schema() -> Value {
     })
 }
 
-const SYSTEM_PROMPT: &str = "\
+const ORCHESTRATOR_FALLBACK: &str = "\
 You are Agent L, an orchestrator. Given the last few turns of a conversation, \
 classify the user's intent and output a task plan as JSON.
 
@@ -201,7 +202,8 @@ impl Agent for OrchestratorAgent {
             context
         };
 
-        let mut messages: Vec<Value> = vec![json!({ "role": "system", "content": SYSTEM_PROMPT })];
+        let system_prompt = prompts::load("orchestrator", ORCHESTRATOR_FALLBACK);
+        let mut messages: Vec<Value> = vec![json!({ "role": "system", "content": system_prompt })];
 
         messages.extend_from_slice(recent);
 

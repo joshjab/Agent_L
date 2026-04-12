@@ -83,6 +83,7 @@ src/
   lib.rs                      — re-exports all modules for integration tests
   app.rs                      — App state, AppEvent enum, StartupState enum
   config.rs                   — configuration (env vars / .env file)
+  prompts.rs                  — load prompts from prompts/*.md with fallback to compiled-in defaults
   ollama.rs                   — streaming HTTP client for /api/chat, post_json helper
   startup.rs                  — startup health checks (/api/tags, /api/ps)
   ui.rs                       — ratatui rendering, markdown parsing, OSC 8 hyperlinks
@@ -114,6 +115,26 @@ tests/
   live/
     live_pipeline.rs          — live tests against a real Ollama instance (#[ignore] by default)
 ```
+
+## Prompt Customization
+
+Every LLM system prompt lives in the `prompts/` directory as a plain Markdown file. You can edit these without recompiling.
+
+| File | Controls |
+| :--- | :--- |
+| `prompts/orchestrator.md` | Intent classification and agent routing rules |
+| `prompts/persona.md` | Assistant personality and tone |
+| `prompts/persona_goal_reminder.md` | Short reminder injected every 10 turns |
+| `prompts/search.md` | Search specialist behavior and ReAct format (`{now}` is replaced with the current UTC time at runtime) |
+| `prompts/code_scope.md` | One-off vs. project scope classification |
+
+To override the directory (e.g., store prompts in your config folder or an Obsidian vault):
+
+```env
+AGENT_L_PROMPTS_DIR=/path/to/my/prompts
+```
+
+If a file is missing or unreadable, Agent-L falls back to the compiled-in default — the binary always works standalone.
 
 ## Roadmap
 

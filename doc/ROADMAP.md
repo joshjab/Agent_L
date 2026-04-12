@@ -446,6 +446,81 @@ cargo test --test live_pipeline -- --ignored --nocapture
 
 ---
 
+## M7.6.2 — Prompt Externalization
+
+Right now every system prompt is a `const &str` baked into the source file that defines it
+(`orchestrator.rs`, `persona.rs`, `code.rs`). Changing a prompt means recompiling. This
+milestone moves every prompt out into plain Markdown files so users can tune them without
+touching Rust, and operators can ship different personalities just by swapping files.
+
+**Why Markdown?** Prompts are long, multi-paragraph text. Markdown files are easy to read,
+diff, and edit in any text editor. They live outside the binary, so they can be changed
+without a recompile. The app reads them at startup; if a file is missing it falls back to
+a compiled-in default so the binary still works standalone.
+
+**Which prompts?**
+- `prompts/orchestrator.md` — the Agent-L routing/classification system prompt (currently
+  `SYSTEM_PROMPT` const in `src/agents/orchestrator.rs`)
+- `prompts/persona.md` — the assistant personality/tone prompt (currently
+  `DEFAULT_PERSONA_PROMPT` const in `src/agents/persona.rs`)
+- `prompts/code_scope.md` — the scope-detection system prompt (currently
+  `SCOPE_SYSTEM_PROMPT` const in `src/agents/specialists/code.rs`)
+
+**Directory convention:** the prompts directory is resolved relative to the working directory
+at startup. A `AGENT_L_PROMPTS_DIR` environment variable overrides the path so users can
+store prompts anywhere on disk (e.g. in their config directory or Obsidian vault).
+
+### Tasks
+
+- [x] Create `prompts/` directory at the repo root and add the three Markdown files above.
+  Copy the existing `const` strings verbatim as the initial content — do not rephrase them.
+  Add a one-line comment at the top of each file (e.g. `<!-- orchestrator system prompt -->`).
+  Also added `prompts/search.md` and `prompts/persona_goal_reminder.md` so all five LLM
+  prompts are externalized.
+
+- [x] Add a `src/prompts.rs` module with two public functions:
+  ```rust
+  pub fn load(name: &str, fallback: &str) -> String
+  pub fn load_with(name: &str, fallback: &str, vars: &[(&str, &str)]) -> String
+  ```
+  `load` resolves path as `$AGENT_L_PROMPTS_DIR/<name>.md` (or `prompts/<name>.md`),
+  strips HTML comments, trims whitespace, and returns fallback on I/O error.
+  `load_with` additionally substitutes `{key}` placeholders (used for `{now}` in search prompt).
+
+- [x] Replace all five prompt `const` strings with `prompts::load(...)` / `prompts::load_with(...)`
+  calls at their call sites. Fallback strings are the old `const` values verbatim.
+
+- [x] Write unit tests in `src/prompts.rs`:
+  - Happy path: create a temp file, set `AGENT_L_PROMPTS_DIR` to its parent, call `load`,
+    assert the returned string matches the file content (trimmed).
+  - Comment stripping: file with `<!-- comment -->` header, assert comment absent in result.
+  - Fallback path: point `AGENT_L_PROMPTS_DIR` at a non-existent directory, assert fallback returned.
+  - `load_with` substitution: file with `{now}` placeholder, assert it is replaced.
+  - `load_with` fallback substitution: missing file, assert placeholder replaced in fallback.
+  - All use the `ENV_MUTEX` pattern to prevent parallel test races.
+
+- [x] Update `README.md`: add a "Prompt Customization" section.
+
+- [x] Run `cargo check && cargo clippy -- -D warnings && cargo test && cargo fmt --check`.
+
+### Verification ✅
+
+```bash
+cargo check && cargo clippy -- -D warnings && cargo test && cargo fmt --check
+```
+
+274 tests pass (274 lib + integration). 5 new tests in `src/prompts.rs`, plus 1 new comment-
+stripping test. Zero warnings, zero clippy errors, fmt clean.
+
+All five prompts externalized: `prompts/orchestrator.md`, `prompts/persona.md`,
+`prompts/persona_goal_reminder.md`, `prompts/search.md`, `prompts/code_scope.md`.
+`AGENT_L_PROMPTS_DIR` env var overrides the directory.
+
+Manual check: edit `prompts/persona.md` to prepend "You speak like a pirate." to the prompt,
+run `cargo run`, and confirm the assistant's greeting changes without recompiling.
+
+---
+
 ## M7.7 — UI: Clickable Source Links (ratatui 0.31 upgrade)
 
 Right now, search responses show a `[source]` label where the URL used to be. The label is
