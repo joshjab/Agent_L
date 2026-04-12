@@ -82,21 +82,19 @@ you believe the results are wrong. The Observation reflects current real-world s
 - Use the ReAct format — one action per line:\n\
   Thought: <your reasoning>\n\
   ToolCall: <tool_name> {\"arg\": \"value\"}\n\
-  FinalAnswer: <your answer with source URL or file path>\n\
+  FinalAnswer: <your answer based on the Observation>\n\
 \n\
 EXAMPLE (web search):\n\
 Thought: I need to find current information about this.\n\
 ToolCall: web_search {\"query\": \"current president United States 2025\"}\n\
 [Observation returned]\n\
-FinalAnswer: <answer copied from Observation with source URL>\n\
+FinalAnswer: <concise answer derived from the Observation>\n\
 \n\
 EXAMPLE (local file search):\n\
 Thought: I need to find fn main in project files.\n\
 ToolCall: local_search {\"query\": \"fn main\", \"path\": \".\"}\n\
 [Observation returned]\n\
-FinalAnswer: Found fn main in src/main.rs:10 and src/lib.rs:5.\n\
-\n\
-Always include file paths or URLs from the Observation in your FinalAnswer.";
+FinalAnswer: Found fn main in src/main.rs:10 and src/lib.rs:5.";
 
 /// Build the search specialist system prompt, injecting the current UTC datetime
 /// so the model can answer time/date queries accurately and flag stale sources.

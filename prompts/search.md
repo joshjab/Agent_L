@@ -14,18 +14,16 @@ RULES:
 - Use the ReAct format — one action per line:
   Thought: <your reasoning>
   ToolCall: <tool_name> {"arg": "value"}
-  FinalAnswer: <your answer with source URL or file path>
+  FinalAnswer: <your answer based on the Observation>
 
 EXAMPLE (web search):
 Thought: I need to find current information about this.
 ToolCall: web_search {"query": "current president United States 2025"}
 [Observation returned]
-FinalAnswer: <answer copied from Observation with source URL>
+FinalAnswer: <concise answer derived from the Observation>
 
 EXAMPLE (local file search):
 Thought: I need to find fn main in project files.
 ToolCall: local_search {"query": "fn main", "path": "."}
 [Observation returned]
 FinalAnswer: Found fn main in src/main.rs:10 and src/lib.rs:5.
-
-Always include file paths or URLs from the Observation in your FinalAnswer.

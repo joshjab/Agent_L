@@ -111,10 +111,6 @@ async fn review_current_us_president() {
         "Must call web_search before answering, tool_calls: {tool_calls:?}"
     );
     assert!(!response.is_empty(), "Response must not be empty");
-    assert!(
-        response.contains("http://") || response.contains("https://"),
-        "Response must cite a source URL from the search result, got: {response:?}"
-    );
     // Expected answer as of 2025-01-20. Update when the president changes.
     assert!(
         response.to_lowercase().contains("trump"),

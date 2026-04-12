@@ -26,12 +26,12 @@ fn ddg_resp(abstract_text: &str, url: &str) -> String {
     )
 }
 
-// ── citation format ───────────────────────────────────────────────────────────
+// ── answer accuracy ───────────────────────────────────────────────────────────
 
-/// The SearchSpecialist must return a FinalAnswer that includes a citation
-/// (URL), not a free-form prose answer produced without any tool call.
+/// The SearchSpecialist must use a tool call and return an accurate answer
+/// derived from the Observation — not a free-form answer from model knowledge.
 #[tokio::test(flavor = "multi_thread")]
-async fn search_returns_citation_not_prose() {
+async fn search_returns_accurate_answer_from_observation() {
     let ollama = MockServer::start().await;
     let ddg = MockServer::start().await;
 
@@ -55,11 +55,11 @@ async fn search_returns_citation_not_prose() {
         .mount(&ddg)
         .await;
 
-    // Step 2: model gives final answer with citation
+    // Step 2: model gives final answer (no URL required)
     Mock::given(method("POST"))
         .and(path("/api/chat"))
         .respond_with(ResponseTemplate::new(200).set_body_string(ollama_resp(
-            r#"FinalAnswer: The capital of France is Paris. Source: https://en.wikipedia.org/wiki/France"#,
+            "FinalAnswer: The capital of France is Paris.",
         )))
         .mount(&ollama)
         .await;
@@ -73,11 +73,6 @@ async fn search_returns_citation_not_prose() {
         .await
         .unwrap();
 
-    // Answer must contain a URL (citation), not just prose
-    assert!(
-        answer.contains("https://"),
-        "answer should contain a citation URL, got: {answer}"
-    );
     assert!(
         answer.contains("Paris"),
         "answer should mention Paris, got: {answer}"
@@ -125,7 +120,7 @@ async fn run_plan_search_step_produces_tokens() {
     Mock::given(method("POST"))
         .and(path("/api/chat"))
         .respond_with(ResponseTemplate::new(200).set_body_string(ollama_resp(
-            r#"FinalAnswer: answer Source: https://example.com"#,
+            "FinalAnswer: answer",
         )))
         .mount(&ollama)
         .await;
@@ -188,7 +183,7 @@ async fn search_always_calls_ddg_tool() {
     Mock::given(method("POST"))
         .and(path("/api/chat"))
         .respond_with(ResponseTemplate::new(200).set_body_string(ollama_resp(
-            r#"FinalAnswer: News found. Source: https://news.example.com"#,
+            "FinalAnswer: News found.",
         )))
         .mount(&ollama)
         .await;
