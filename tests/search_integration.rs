@@ -58,9 +58,10 @@ async fn search_returns_accurate_answer_from_observation() {
     // Step 2: model gives final answer (no URL required)
     Mock::given(method("POST"))
         .and(path("/api/chat"))
-        .respond_with(ResponseTemplate::new(200).set_body_string(ollama_resp(
-            "FinalAnswer: The capital of France is Paris.",
-        )))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_string(ollama_resp("FinalAnswer: The capital of France is Paris.")),
+        )
         .mount(&ollama)
         .await;
 
@@ -119,9 +120,9 @@ async fn run_plan_search_step_produces_tokens() {
 
     Mock::given(method("POST"))
         .and(path("/api/chat"))
-        .respond_with(ResponseTemplate::new(200).set_body_string(ollama_resp(
-            "FinalAnswer: answer",
-        )))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_string(ollama_resp("FinalAnswer: answer")),
+        )
         .mount(&ollama)
         .await;
 
@@ -182,9 +183,9 @@ async fn search_always_calls_ddg_tool() {
 
     Mock::given(method("POST"))
         .and(path("/api/chat"))
-        .respond_with(ResponseTemplate::new(200).set_body_string(ollama_resp(
-            "FinalAnswer: News found.",
-        )))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_string(ollama_resp("FinalAnswer: News found.")),
+        )
         .mount(&ollama)
         .await;
 

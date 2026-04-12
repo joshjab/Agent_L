@@ -1,6 +1,8 @@
 # Test Case Catalogue
 
-A human-readable record of the live integration tests in `tests/live/live_pipeline.rs`.
+A human-readable record of the live integration tests in `tests/live/`.
+Run all live tests with: `cargo test --test live -- --ignored --nocapture`
+Run a single category: `cargo test --test live live_pipeline:: -- --ignored --nocapture`
 Each entry describes the input, what the test asserts, and why.
 
 Add a new entry here whenever a prompt regression is discovered and a new test

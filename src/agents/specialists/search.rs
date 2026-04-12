@@ -122,10 +122,14 @@ impl SearchSpecialist {
     }
 
     pub fn new(model: impl Into<String>, chat_url: impl Into<String>) -> Self {
+        // Allow tests (and operators) to redirect DDG calls to a local mock server
+        // without changing run_plan's signature.
+        let ddg_base_url = std::env::var("AGENT_L_DDG_BASE_URL")
+            .unwrap_or_else(|_| "https://api.duckduckgo.com".into());
         Self {
             model: model.into(),
             chat_url: chat_url.into(),
-            ddg_base_url: "https://api.duckduckgo.com".into(),
+            ddg_base_url,
         }
     }
 

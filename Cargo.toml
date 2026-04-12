@@ -21,9 +21,5 @@ version = "3"
 wiremock = "0.6"
 
 [[test]]
-name = "live_pipeline"
-path = "tests/live/live_pipeline.rs"
-
-[[test]]
-name = "live_factual_review"
-path = "tests/live/live_factual_review.rs"
+name = "live"
+path = "tests/live.rs"

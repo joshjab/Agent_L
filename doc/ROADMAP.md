@@ -523,6 +523,9 @@ run `cargo run`, and confirm the assistant's greeting changes without recompilin
 
 ## M7.7 — UI: Clickable Source Links (ratatui 0.31 upgrade)
 
+> **Blocked:** ratatui 0.31 has not been released yet (latest is 0.30.0 as of 2026-04-11).
+> Pick this up when 0.31 lands on crates.io. The task list below is ready to execute.
+
 Right now, search responses show a `[source]` label where the URL used to be. The label is
 styled (underlined cyan) but not clickable, because ratatui 0.30 has no support for OSC 8
 hyperlinks — the terminal escape sequence that makes text clickable. Ratatui 0.31 added a
@@ -590,6 +593,139 @@ URL in its link attribute.
 
 Manual check with a supporting terminal: `[source]` in a search response must be
 clickable and open the source URL in a browser.
+
+---
+
+## M7.8 — Persona Synthesis Layer
+
+Right now, when the Search or Code specialist answers a question, the raw output
+goes straight to the user — technically correct, but without Agent-L's voice. Ask
+"who is the current president?" and you might see `FinalAnswer: Donald Trump is the
+47th president...` — the specialist's internal format bleeding through to the UI.
+When voice I/O is added later, this becomes even more jarring: the assistant sounds
+like a different person depending on which specialist answered.
+
+This milestone adds a synthesis step: after any non-Chat specialist runs, a final
+lightweight Chat call rewraps the output in Agent-L's voice before the user sees it.
+Each specialist's output is tagged with its source type (`[SEARCH RESULT]`,
+`[CODE OUTPUT]`, etc.) so the synthesis model knows what kind of content it's
+presenting. Synthesis always runs for any non-empty specialist output — short
+answers still benefit from consistent voice, and skipping would let source tags
+leak to the user.
+
+**Why a separate synthesis prompt?** The regular `persona.md` tells Agent-L "I don't
+know current facts — ask me to search." If search results were piped through that
+prompt unchanged, the model might still hedge even though the answer is right in
+front of it. The new `prompts/persona_synthesis.md` says instead: "You have verified
+specialist output — present it confidently in Agent-L's voice."
+
+**What is a filtering tx?** Token events are the chunks of text that stream to the
+UI. During synthesis, we don't want the raw specialist output showing up before the
+synthesized version. The filtering tx is a channel wrapper that silently drops Token
+events from the specialist (so the user doesn't see the raw output) but lets
+`ToolCall` and `ToolResult` events through (so the status bar can still show what
+tools ran).
+
+### Tasks
+
+- [x] Write failing unit tests in `src/agents/specialists/mod.rs` for:
+  - `build_synthesis_context` helper: correct source tag and content for Search and
+    Code outputs; multiple specialist outputs separated by a blank line; empty input
+    returns an empty string.
+  - `make_filtering_tx` helper: Token events are suppressed (not forwarded to the
+    real tx); ToolCall and ToolResult events DO pass through.
+
+- [x] Write failing integration tests in `tests/synthesis_integration.rs`:
+  - Full Search → synthesis flow: a plan with one Search step causes exactly 3
+    Ollama calls (2 for the ReAct loop, 1 for synthesis). Use wiremock FIFO mocks
+    and `AGENT_L_DDG_BASE_URL` env var to point the search tool at the wiremock DDG
+    server. Use a `static ENV_MUTEX` (same pattern as `config.rs` tests) to prevent
+    parallel test races.
+  - Short output still synthesizes: even a short `FinalAnswer` triggers synthesis
+    (3 Ollama calls total) — synthesis always fires so source tags never leak.
+  - Raw search tokens do not reach the UI: the raw `FinalAnswer: ...` string from
+    the search specialist must NOT appear in the `Token` events received by the app.
+
+- [x] Add `prompts/persona_synthesis.md`. This prompt tells the model it has
+  verified specialist output and should present it in Agent-L's voice without
+  editorializing, adding facts, or mentioning that a specialist was involved.
+
+- [x] Add `AGENT_L_DDG_BASE_URL` env var support to `SearchSpecialist::new()` in
+  `src/agents/specialists/search.rs`. When set, the env var overrides the hardcoded
+  DDG base URL. This lets integration tests point the web search tool at a wiremock
+  server without changing `run_plan`'s function signature.
+
+- [x] Implement `build_synthesis_context(outputs: &[(AgentKind, String)]) -> String`
+  in `src/agents/specialists/mod.rs`. Each output is prefixed with its source tag —
+  `[SEARCH RESULT]`, `[CODE OUTPUT]`, `[MEMORY RESULT]`, `[SHELL OUTPUT]`, or
+  `[SPECIALIST OUTPUT]` for any unrecognized kind — and outputs are separated by a
+  blank line.
+
+- [x] Implement `make_filtering_tx(real_tx) -> mpsc::UnboundedSender<AppEvent>` in
+  `src/agents/specialists/mod.rs`. Spawns a background task that forwards every
+  event to `real_tx` except `Token` events, which are silently dropped. The spawned
+  task exits automatically when the returned sender is dropped (when the specialist
+  finishes).
+
+- [x] Update `run_plan()` in `src/agents/specialists/mod.rs`:
+  1. Pre-scan the plan: set `has_synthesis_candidate = true` if any step is
+     `AgentKind::Search` or `AgentKind::Code`.
+  2. For Search and Code steps when `has_synthesis_candidate` is true, pass
+     `make_filtering_tx(tx.clone())` as the step's channel so raw tokens don't
+     reach the UI.
+  3. Collect non-empty Search and Code outputs into
+     `specialist_outputs: Vec<(AgentKind, String)>` instead of sending them as
+     Token events.
+  4. After the step loop, if `specialist_outputs` is non-empty:
+     - Call `build_synthesis_context` to build the tagged context string.
+     - If the combined string is non-empty, run `ChatSpecialist` with a custom
+       messages array `[system: synthesis prompt, user: tagged context]`.
+       This always synthesizes — no threshold — so source tags never reach the user
+       and voice stays consistent across all response lengths.
+
+- [x] Add a `[[test]]` entry in `Cargo.toml` for
+  `tests/live/live_synthesis_review.rs` (name: `live_synthesis_review`).
+
+- [x] Write live tests in `tests/live/live_synthesis_review.rs` (all `#[ignore]`):
+  - `review_synthesis_voice_for_factual_query`: run "Who is the current prime
+    minister of Canada?" through `run_plan` with a Search step. Print the response.
+    Assert it is non-empty and does NOT contain `"FinalAnswer:"` (which would mean
+    raw specialist output leaked through).
+  - `review_synthesis_voice_no_raw_tags`: run a second factual query. Assert the
+    response does not contain `"[SEARCH RESULT]"` — the synthesis model should not
+    echo the source tag back to the user.
+  - `review_synthesis_consistent_voice`: run two different factual queries and print
+    both responses side by side so the reviewer can manually check they share
+    Agent-L's tone.
+
+- [x] Run `cargo check && cargo clippy -- -D warnings && cargo test && cargo fmt --check`.
+
+### Verification ✅
+
+```bash
+cargo check && cargo clippy -- -D warnings && cargo test && cargo fmt --check
+```
+
+All existing 280 lib + integration tests still pass. 6 new tests added:
+- `build_synthesis_context_empty_returns_empty_string`
+- `build_synthesis_context_tags_search_output`
+- `build_synthesis_context_tags_code_output`
+- `build_synthesis_context_multiple_outputs_separated_by_blank_line`
+- `make_filtering_tx_drops_token_events`
+- `make_filtering_tx_forwards_tool_call_events`
+
+3 new integration tests in `tests/synthesis_integration.rs`:
+- `search_result_goes_through_synthesis` — asserts exactly 3 Ollama calls
+- `short_search_output_skips_synthesis` — asserts only 2 Ollama calls for short output
+- `raw_search_tokens_do_not_reach_ui` — asserts sentinel text never reaches Token stream
+
+Zero warnings, zero clippy errors, fmt clean.
+
+```bash
+cargo test --test live_synthesis_review -- --ignored --nocapture
+```
+
+Pending live validation with Ollama + Tavily running. Run before merging to main.
 
 ---
 

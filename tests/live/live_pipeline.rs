@@ -1,17 +1,9 @@
-//! Live integration tests that require a running Ollama instance.
+//! Pipeline and routing live tests.
 //!
-//! All tests are `#[ignore]` by default so that `cargo test` stays fast.
-//! To run them:
-//!
+//! Run this category:
 //! ```bash
-//! cargo test --test live_pipeline -- --ignored --nocapture
+//! cargo test --test live live_pipeline:: -- --ignored --nocapture
 //! ```
-//!
-//! Prerequisites:
-//! - Ollama running at `OLLAMA_HOST:OLLAMA_PORT` (defaults: `localhost:11434`)
-//! - The configured model pulled locally (`OLLAMA_MODEL`, default: `llama3.2`)
-//!
-//! See `tests/live/README.md` for full setup instructions.
 
 use agent_l::agents::orchestrator::{AgentKind, IntentType, OrchestratorAgent, PlanStep, TaskPlan};
 use agent_l::agents::specialists::run_plan;

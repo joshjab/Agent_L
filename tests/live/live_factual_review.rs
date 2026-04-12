@@ -1,21 +1,13 @@
 //! Manual-review live tests for factual accuracy.
 //!
-//! These tests run a factual question through the full pipeline and **print
-//! the response** so a human can verify correctness before the commit lands.
-//! They assert only the *mechanism* (non-empty response, web_search was called)
-//! — not the specific answer, which changes over time and can't be hard-coded.
+//! Print the response so a human can verify correctness before the commit lands.
+//! Assert only the mechanism (non-empty response, web_search was called) — not
+//! the specific answer, which changes over time and can't be hard-coded.
 //!
-//! ## How to run
-//!
+//! Run this category:
 //! ```bash
-//! cargo test --test live_factual_review -- --ignored --nocapture
+//! cargo test --test live live_factual_review:: -- --ignored --nocapture
 //! ```
-//!
-//! Read the printed answers before pressing Enter in the pre-commit prompt.
-//!
-//! ## Prerequisites
-//! - Ollama running at `OLLAMA_HOST:OLLAMA_PORT` (defaults: `localhost:11434`)
-//! - The configured model pulled locally (`OLLAMA_MODEL`, default: `llama3.2`)
 
 use agent_l::agents::orchestrator::{AgentKind, IntentType, OrchestratorAgent, PlanStep, TaskPlan};
 use agent_l::agents::specialists::run_plan;

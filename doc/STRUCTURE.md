@@ -51,9 +51,12 @@ Agent_L/
     ├── orchestrator_integration.rs
     ├── pipeline_integration.rs
     ├── search_integration.rs
+    ├── live.rs
     └── live/
         ├── README.md
-        └── live_pipeline.rs
+        ├── live_pipeline.rs
+        ├── live_factual_review.rs
+        └── live_synthesis_review.rs
 ```
 
 ---
@@ -245,7 +248,10 @@ Runs `claude` as a subprocess for one-off code tasks. `ClaudeCodeTool::run(task,
 | `tests/orchestrator_integration.rs` | Intent classification, plan validation, retry on bad JSON |
 | `tests/pipeline_integration.rs` | Full Persona → Agent L → Specialist end-to-end with wiremock |
 | `tests/search_integration.rs` | DuckDuckGo response parsing, citation format, local search |
-| `tests/live/live_pipeline.rs` | Live tests against a real Ollama instance (`#[ignore]` by default) |
+| `tests/live.rs` | Live test entry point — all categories compiled into one `--test live` binary |
+| `tests/live/live_pipeline.rs` | Routing + specialist live tests (`#[ignore]` by default) |
+| `tests/live/live_factual_review.rs` | Factual accuracy live tests (`#[ignore]` by default) |
+| `tests/live/live_synthesis_review.rs` | Synthesis voice live tests (`#[ignore]` by default) |
 
 ---
 

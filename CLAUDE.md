@@ -30,11 +30,13 @@ cargo test --test ollama_integration
 # Run with output visible
 cargo test -- --nocapture
 
-# Run live tests (requires Ollama running)
-cargo test --test live_pipeline -- --ignored --nocapture
+# Run all live tests (requires Ollama running; read REVIEW REQUIRED blocks)
+cargo test --test live -- --ignored --nocapture
 
-# Run factual review tests (requires Ollama; read printed answers manually)
-cargo test --test live_factual_review -- --ignored --nocapture
+# Run a specific live category
+cargo test --test live live_pipeline:: -- --ignored --nocapture
+cargo test --test live live_factual_review:: -- --ignored --nocapture
+cargo test --test live live_synthesis_review:: -- --ignored --nocapture
 ```
 
 ## Pre-commit hook
@@ -46,12 +48,12 @@ when Ollama is reachable. Activate once per clone:
 git config core.hooksPath .githooks
 ```
 
-When Ollama is reachable, the hook also runs `live_factual_review` tests with
-`--nocapture` and pauses to ask you to confirm the printed answers look correct.
-Read the "REVIEW REQUIRED" blocks before pressing y.
+When Ollama is reachable, the hook runs all live tests with `--nocapture` and
+pauses to ask you to confirm the printed answers look correct. Read the
+"REVIEW REQUIRED" blocks before pressing y.
 
-The hook skips live tests (with a warning) if Ollama is not running — but both
-live suites must pass before merging any milestone to `main`.
+The hook skips live tests (with a warning) if Ollama is not running — but the
+full live suite must pass before merging any milestone to `main`.
 
 ## Factual accuracy
 
@@ -65,6 +67,8 @@ route to the Search specialist — never answered from model knowledge.
 - `tests/live/live_factual_review.rs` — manual-review tests that print the full
   response for human sign-off; assert only the mechanism (web_search called,
   non-empty response), not the specific answer.
+- `tests/live/live_synthesis_review.rs` — manual-review tests that verify
+  synthesis voice (no raw `FinalAnswer:` or `[SEARCH RESULT]` tags in output).
 
 ## Architecture
 

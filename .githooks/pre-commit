@@ -51,33 +51,28 @@ OLLAMA_PORT="${OLLAMA_PORT:-11434}"
 echo "[pre-commit] Checking Ollama at ${OLLAMA_HOST}:${OLLAMA_PORT}…"
 
 if curl -sf --max-time 2 "http://${OLLAMA_HOST}:${OLLAMA_PORT}/api/tags" > /dev/null 2>&1; then
-    ok "Ollama reachable — running live_pipeline tests…"
-    "$CARGO" test --test live_pipeline -- --ignored \
-        || fail "live_pipeline tests failed (run with --nocapture to debug)"
+    ok "Ollama reachable — running all live tests with output (read the REVIEW blocks)…"
+    echo ""
+    "$CARGO" test --test live -- --ignored --nocapture \
+        || fail "live tests failed (see output above)"
+    echo ""
     ok "Live suite passed."
 
-    # ── 3. Factual review (manual sign-off required) ─────────────────────────
-    echo ""
-    echo "[pre-commit] Running factual review tests (read the output carefully)…"
-    "$CARGO" test --test live_factual_review -- --ignored --nocapture \
-        || fail "live_factual_review tests failed"
-
-    echo ""
+    # ── 3. Manual sign-off (factual + synthesis review) ──────────────────────
     if [ -t 0 ]; then
         # Interactive terminal — ask the committer to sign off on the answers.
-        read -rp "[pre-commit] Review the factual answers above. Do they look correct? [y/N] " _confirm
+        read -rp "[pre-commit] Review the REVIEW REQUIRED blocks above. Do they look correct? [y/N] " _confirm
         if [[ "$_confirm" != "y" && "$_confirm" != "Y" ]]; then
-            fail "Factual review rejected — fix the answers before committing"
+            fail "Live review rejected — fix the answers before committing"
         fi
-        ok "Factual review approved."
+        ok "Live review approved."
     else
-        warn "Non-interactive — skipping factual review sign-off prompt."
-        warn "Run manually and verify answers before merging to main:"
-        warn "  cargo test --test live_factual_review -- --ignored --nocapture"
+        warn "Non-interactive — skipping live review sign-off prompt."
+        warn "Run manually and verify REVIEW REQUIRED blocks before merging to main:"
+        warn "  cargo test --test live -- --ignored --nocapture"
     fi
 else
     warn "Ollama not reachable at ${OLLAMA_HOST}:${OLLAMA_PORT} — skipping live tests."
     warn "Start Ollama and run manually before merging to main:"
-    warn "  cargo test --test live_pipeline -- --ignored --nocapture"
-    warn "  cargo test --test live_factual_review -- --ignored --nocapture"
+    warn "  cargo test --test live -- --ignored --nocapture"
 fi

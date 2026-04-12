@@ -270,9 +270,9 @@ impl CodeSpecialist {
             }
             TaskScope::Project => {
                 // Direct file editing is not yet supported — the permission
-                // relay (M8) is needed first. Send a helpful message instead.
-                let _ = tx.send(AppEvent::Token(PROJECT_LIMITATION_MSG.to_string()));
-                Ok(String::new())
+                // relay (M8) is needed first. Return the limitation message as
+                // the output so run_plan() can present it via the synthesis layer.
+                Ok(PROJECT_LIMITATION_MSG.to_string())
             }
         }
     }
@@ -558,7 +558,7 @@ mod tests {
 
     // ── project path ─────────────────────────────────────────────────────────
 
-    /// Ollama says project → specialist sends a limitation message, not subprocess output.
+    /// Ollama says project → specialist returns a limitation message (not subprocess output).
     #[tokio::test]
     async fn project_sends_limitation_message_not_subprocess_output() {
         let server = MockServer::start().await;
@@ -573,22 +573,12 @@ mod tests {
         let mut s = CodeSpecialist::new("test-model", &url, std::env::temp_dir());
         s.invoker = ClaudeCodeInvoker::with_command("/nonexistent/binary", vec![]);
 
-        let (tx, mut rx) = mpsc::unbounded_channel();
+        let (tx, _rx) = mpsc::unbounded_channel();
         let result = s.run("some project task", tx).await.unwrap();
 
-        assert_eq!(result, "", "project path returns empty string");
-        let tokens: String = std::iter::from_fn(|| rx.try_recv().ok())
-            .filter_map(|e| {
-                if let AppEvent::Token(t) = e {
-                    Some(t)
-                } else {
-                    None
-                }
-            })
-            .collect();
         assert!(
-            tokens.contains("not supported") || tokens.contains("limitation"),
-            "expected limitation message, got: {tokens:?}"
+            result.contains("not supported") || result.contains("limitation"),
+            "expected limitation message in return value, got: {result:?}"
         );
     }
 
@@ -648,8 +638,8 @@ mod tests {
 
     // ── project limitation message ───────────────────────────────────────────
 
-    /// When scope is Project the specialist sends a limitation message as a
-    /// Token event (no subprocess is spawned).
+    /// When scope is Project the specialist returns a limitation message in the
+    /// output string (no subprocess is spawned, no Token event emitted directly).
     #[tokio::test]
     async fn project_scope_sends_limitation_message() {
         let server = MockServer::start().await;
@@ -664,29 +654,16 @@ mod tests {
         let mut s = CodeSpecialist::new("test-model", &url, std::env::temp_dir());
         s.invoker = ClaudeCodeInvoker::with_command("/nonexistent/binary", vec![]);
 
-        let (tx, mut rx) = mpsc::unbounded_channel();
-        let result = s.run("modify src/main.rs", tx).await;
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let result = s.run("modify src/main.rs", tx).await.unwrap();
 
-        // Should succeed (returns Ok) even though subprocess binary is bad.
-        assert!(result.is_ok(), "project path should not invoke the binary");
-
-        let tokens: Vec<String> = std::iter::from_fn(|| rx.try_recv().ok())
-            .filter_map(|e| {
-                if let AppEvent::Token(t) = e {
-                    Some(t)
-                } else {
-                    None
-                }
-            })
-            .collect();
-        let combined = tokens.join("");
         assert!(
-            combined.contains("not supported") || combined.contains("limitation"),
-            "expected a limitation message, got: {combined:?}"
+            result.contains("not supported") || result.contains("limitation"),
+            "expected limitation message in return value, got: {result:?}"
         );
     }
 
-    /// Project scope detected via keyword heuristic also sends a limitation
+    /// Project scope detected via keyword heuristic also returns a limitation
     /// message and does not call the subprocess.
     #[tokio::test]
     async fn project_scope_via_heuristic_sends_limitation_message() {
@@ -699,22 +676,15 @@ mod tests {
         let mut s = CodeSpecialist::new("test-model", &url, std::env::temp_dir());
         s.invoker = ClaudeCodeInvoker::with_command("/nonexistent/binary", vec![]);
 
-        let (tx, mut rx) = mpsc::unbounded_channel();
+        let (tx, _rx) = mpsc::unbounded_channel();
         // This task has "src/" in it — heuristic should classify as Project
         // without hitting Ollama (which isn't running on the dead port).
-        let result = s.run("add a comment to src/config.rs", tx).await;
+        let result = s.run("add a comment to src/config.rs", tx).await.unwrap();
 
-        assert!(result.is_ok(), "should succeed via heuristic, not Ollama");
-        let tokens: Vec<String> = std::iter::from_fn(|| rx.try_recv().ok())
-            .filter_map(|e| {
-                if let AppEvent::Token(t) = e {
-                    Some(t)
-                } else {
-                    None
-                }
-            })
-            .collect();
-        assert!(!tokens.is_empty(), "should have sent a limitation message");
+        assert!(
+            result.contains("not supported") || result.contains("limitation"),
+            "should return a limitation message, got: {result:?}"
+        );
     }
 
     /// If the claude invocation fails (binary exits non-zero), run() returns Err.

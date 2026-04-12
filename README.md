@@ -72,7 +72,7 @@ The test suite covers all modules with inline unit tests and wiremock-based inte
 cargo test
 
 # Live suite — requires Ollama running with the configured model
-cargo test --test live_pipeline -- --ignored --nocapture
+cargo test --test live -- --ignored --nocapture
 ```
 
 ## Project Structure
@@ -112,8 +112,11 @@ tests/
   orchestrator_integration.rs — wiremock tests for intent classification + plan validation
   pipeline_integration.rs     — end-to-end: Persona → Agent L → Specialist
   search_integration.rs       — wiremock tests for DuckDuckGo responses and citation format
+  live.rs                     — live test entry point (combines all live categories)
   live/
-    live_pipeline.rs          — live tests against a real Ollama instance (#[ignore] by default)
+    live_pipeline.rs          — routing + specialist live tests (#[ignore] by default)
+    live_factual_review.rs    — factual accuracy live tests (#[ignore] by default)
+    live_synthesis_review.rs  — synthesis voice live tests (#[ignore] by default)
 ```
 
 ## Prompt Customization

@@ -271,8 +271,11 @@ tests/
   pipeline_integration.rs       — ✅
   search_integration.rs         — ✅
   memory_integration.rs         — planned M9
+  live.rs                       — ✅ live test entry point (all categories compiled into one binary)
   live/
-    live_pipeline.rs            — ✅ live tests against real Ollama (#[ignore] by default)
+    live_pipeline.rs            — ✅ routing + specialist live tests (#[ignore] by default)
+    live_factual_review.rs      — ✅ factual accuracy live tests (#[ignore] by default)
+    live_synthesis_review.rs    — ✅ synthesis voice live tests (#[ignore] by default)
 
 config.toml                     — planned M10: TOML alternative to env vars; model per agent role
 

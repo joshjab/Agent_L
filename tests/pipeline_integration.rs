@@ -224,6 +224,18 @@ async fn search_only_plan_calls_search_specialist() {
         .respond_with(ResponseTemplate::new(200).set_body_string(
             r#"{"model":"m","message":{"role":"assistant","content":"FinalAnswer: Paris"},"done":true}"#,
         ))
+        .up_to_n_times(1)
+        .mount(&server)
+        .await;
+
+    // Third Ollama call: synthesis ChatSpecialist wraps the result in
+    // Agent-L's voice (streaming NDJSON).
+    Mock::given(method("POST"))
+        .and(path("/api/chat"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_string("{\"message\":{\"content\":\"Paris\"},\"done\":true}\n"),
+        )
         .mount(&server)
         .await;
 
@@ -256,8 +268,8 @@ async fn search_only_plan_calls_search_specialist() {
         tokens.contains("Paris"),
         "expected Search answer, got: {tokens}"
     );
-    // SearchSpecialist calls Ollama twice: ToolCall round + FinalAnswer round.
-    assert_eq!(server.received_requests().await.unwrap().len(), 2);
+    // 2 SearchSpecialist calls (ToolCall + FinalAnswer) + 1 synthesis call.
+    assert_eq!(server.received_requests().await.unwrap().len(), 3);
 }
 
 // ── Unknown specialist falls back to Chat ─────────────────────────────────────
